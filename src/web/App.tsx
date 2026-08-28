@@ -1,0 +1,1268 @@
+import {
+  addEdge,
+  applyEdgeChanges,
+  applyNodeChanges,
+  Background,
+  BackgroundVariant,
+  Controls,
+  MiniMap,
+  ReactFlow,
+  type Connection,
+  type Edge,
+  type EdgeChange,
+  type NodeChange,
+  type OnSelectionChangeParams,
+} from '@xyflow/react';
+import {
+  type ChangeEvent,
+  type FormEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
+import { api } from './api';
+import { Icon, type IconName } from './icons';
+import { WorkflowNodeCard, type CanvasNode } from './WorkflowNodeCard';
+import type {
+  AgentProposal,
+  ConnectionRecord,
+  FactoryMetrics,
+  NodeCatalogItem,
+  RunEvent,
+  RunRecord,
+  ValidationIssue,
+  ValidationResult,
+  ViewId,
+  WorkflowDefinition,
+  WorkflowEdge,
+  WorkflowNode,
+} from './types';
+
+const nodeTypes = { workflow: WorkflowNodeCard };
+const viewLabels: Record<ViewId, { label: string; icon: IconName }> = {
+  studio: { label: 'Studio', icon: 'studio' },
+  runs: { label: 'Runs', icon: 'runs' },
+  connections: { label: 'Connections', icon: 'connections' },
+  proposals: { label: 'Agent Proposals', icon: 'agent' },
+  factory: { label: 'Factory', icon: 'factory' },
+};
+
+function readView(): ViewId {
+  const value = window.location.hash.replace('#/', '');
+  return value in viewLabels ? (value as ViewId) : 'studio';
+}
+
+function formatDate(value?: string): string {
+  if (value === undefined) return '—';
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function formatDuration(value?: number): string {
+  if (value === undefined) return 'In progress';
+  if (value < 1_000) return `${value} ms`;
+  if (value < 60_000) return `${(value / 1_000).toFixed(1)} sec`;
+  return `${Math.floor(value / 60_000)}m ${Math.round((value % 60_000) / 1_000)}s`;
+}
+
+function formatPercent(value: number): string {
+  const normalized = value <= 1 ? value * 100 : value;
+  return `${normalized.toFixed(normalized >= 10 ? 0 : 1)}%`;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : 'Something unexpected happened.';
+}
+
+function groupByCategory(items: NodeCatalogItem[]): Array<[string, NodeCatalogItem[]]> {
+  const groups = new Map<string, NodeCatalogItem[]>();
+  for (const item of items) {
+    const group = groups.get(item.category) ?? [];
+    group.push(item);
+    groups.set(item.category, group);
+  }
+  return [...groups.entries()];
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return <span className={`status-badge status-${status.toLowerCase()}`}>{status}</span>;
+}
+
+function LoadingState({ label }: { label: string }) {
+  return (
+    <div className="state-panel" role="status">
+      <span className="spinner" />
+      <strong>{label}</strong>
+      <span>Syncing the latest data from the factory.</span>
+    </div>
+  );
+}
+
+function ErrorState({ message, retry }: { message: string; retry: () => void }) {
+  return (
+    <div className="state-panel error-state" role="alert">
+      <Icon name="warning" size={28} />
+      <strong>We couldn’t load this view</strong>
+      <span>{message}</span>
+      <button className="button secondary" onClick={retry} type="button">
+        <Icon name="refresh" /> Try again
+      </button>
+    </div>
+  );
+}
+
+function EmptyState({
+  icon,
+  title,
+  message,
+  action,
+}: {
+  icon: IconName;
+  title: string;
+  message: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="state-panel empty-state">
+      <span className="empty-icon"><Icon name={icon} size={26} /></span>
+      <strong>{title}</strong>
+      <span>{message}</span>
+      {action}
+    </div>
+  );
+}
+
+function AppHeader({
+  title,
+  eyebrow,
+  children,
+}: {
+  title: string;
+  eyebrow: string;
+  children?: ReactNode;
+}) {
+  return (
+    <header className="page-header">
+      <div>
+        <span className="eyebrow">{eyebrow}</span>
+        <h1>{title}</h1>
+      </div>
+      {children === undefined ? null : <div className="header-actions">{children}</div>}
+    </header>
+  );
+}
+
+export function App() {
+  const [view, setViewState] = useState<ViewId>(readView);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    const onHashChange = () => setViewState(readView());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  function setView(next: ViewId) {
+    window.location.hash = `/${next}`;
+    setViewState(next);
+    setMobileNavOpen(false);
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className={`sidebar ${mobileNavOpen ? 'open' : ''}`}>
+        <div className="brand">
+          <span className="brand-mark"><Icon name="spark" size={22} /></span>
+          <div>
+            <strong>Agentic</strong>
+            <span>Workflow Factory</span>
+          </div>
+        </div>
+        <nav aria-label="Primary navigation">
+          <span className="nav-section-label">Build & operate</span>
+          {(Object.entries(viewLabels) as Array<[ViewId, (typeof viewLabels)[ViewId]]>).map(
+            ([id, item]) => (
+              <button
+                aria-current={view === id ? 'page' : undefined}
+                className={view === id ? 'active' : ''}
+                key={id}
+                onClick={() => setView(id)}
+                type="button"
+              >
+                <Icon name={item.icon} />
+                <span>{item.label}</span>
+                {id === 'proposals' ? <span className="nav-beta">AI</span> : null}
+              </button>
+            ),
+          )}
+        </nav>
+        <div className="sidebar-footer">
+          <span className="system-dot" />
+          <div>
+            <strong>Factory online</strong>
+            <span>Local durable engine</span>
+          </div>
+        </div>
+      </aside>
+      {mobileNavOpen ? (
+        <button
+          aria-label="Close navigation"
+          className="nav-scrim"
+          onClick={() => setMobileNavOpen(false)}
+          type="button"
+        />
+      ) : null}
+      <main className="main-content">
+        <div className="mobile-bar">
+          <button aria-label="Open navigation" className="icon-button" onClick={() => setMobileNavOpen(true)} type="button">
+            <Icon name="menu" />
+          </button>
+          <div className="mobile-brand"><Icon name="spark" /> Workflow Factory</div>
+          <span className="system-dot" />
+        </div>
+        {view === 'studio' ? <StudioView onNavigate={setView} /> : null}
+        {view === 'runs' ? <RunsView /> : null}
+        {view === 'connections' ? <ConnectionsView /> : null}
+        {view === 'proposals' ? <ProposalsView onOpenStudio={() => setView('studio')} /> : null}
+        {view === 'factory' ? <FactoryView onNavigate={setView} /> : null}
+      </main>
+    </div>
+  );
+}
+
+function workflowToCanvas(
+  workflow: WorkflowDefinition,
+  catalog: NodeCatalogItem[],
+): { nodes: CanvasNode[]; edges: Edge[] } {
+  return {
+    nodes: workflow.nodes.map((node) => {
+      const catalogItem = catalog.find((item) => item.type === node.type);
+      return {
+        id: node.id,
+        type: 'workflow',
+        position: node.position,
+        data: {
+          label: node.label,
+          nodeType: node.type,
+          category: catalogItem?.category ?? 'Operations',
+          description: catalogItem?.description ?? 'Workflow operation',
+          config: node.config,
+        },
+      };
+    }),
+    edges: workflow.edges.map((edge) => ({
+      ...edge,
+      type: 'smoothstep',
+      animated: false,
+      style: { stroke: '#6b7f9f', strokeWidth: 1.6 },
+      selected: false,
+    })),
+  };
+}
+
+function canvasToWorkflow(
+  workflow: WorkflowDefinition,
+  nodes: CanvasNode[],
+  edges: Edge[],
+): WorkflowDefinition {
+  const workflowNodes: WorkflowNode[] = nodes.map((node) => ({
+    id: node.id,
+    type: node.data.nodeType,
+    label: node.data.label,
+    position: node.position,
+    config: node.data.config,
+  }));
+  const workflowEdges: WorkflowEdge[] = edges.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    ...(edge.sourceHandle === null ? {} : { sourceHandle: edge.sourceHandle }),
+    ...(edge.targetHandle === null ? {} : { targetHandle: edge.targetHandle }),
+    ...(typeof edge.label === 'string' && edge.label.length > 0
+      ? { condition: edge.label }
+      : {}),
+  }));
+  const trigger = workflowNodes.find((node) =>
+    ['manualTrigger', 'scheduleTrigger', 'webhookTrigger'].includes(node.type),
+  );
+  return {
+    ...workflow,
+    trigger: { type: trigger?.type ?? workflow.trigger.type },
+    nodes: workflowNodes,
+    edges: workflowEdges,
+  };
+}
+
+function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
+  const [catalog, setCatalog] = useState<NodeCatalogItem[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
+  const [workflow, setWorkflow] = useState<WorkflowDefinition | null>(null);
+  const [nodes, setNodes] = useState<CanvasNode[]>([]);
+  const [edges, setEdges] = useState<Edge[]>([]);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [paletteSearch, setPaletteSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<'save' | 'validate' | 'run' | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'success' | 'warning' | 'error'; text: string } | null>(null);
+  const [validation, setValidation] = useState<ValidationResult | null>(null);
+  const [configDraft, setConfigDraft] = useState('{}');
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+
+  const loadStudio = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [catalogResponse, workflowResponse] = await Promise.all([
+        api.catalog(),
+        api.workflows(),
+      ]);
+      setCatalog(catalogResponse.items);
+      setWorkflows(workflowResponse.items);
+      const first = workflowResponse.items[0] ?? null;
+      setWorkflow(first);
+      if (first !== null) {
+        const canvas = workflowToCanvas(first, catalogResponse.items);
+        setNodes(canvas.nodes);
+        setEdges(canvas.edges);
+      }
+    } catch (loadError) {
+      setError(errorText(loadError));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStudio();
+  }, [loadStudio]);
+
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
+    [nodes, selectedNodeId],
+  );
+  const selectedEdge = useMemo(
+    () => edges.find((edge) => edge.id === selectedEdgeId) ?? null,
+    [edges, selectedEdgeId],
+  );
+
+  useEffect(() => {
+    if (selectedNode !== null) {
+      setConfigDraft(JSON.stringify(selectedNode.data.config, null, 2));
+      setConfigError(null);
+    }
+  }, [selectedNode?.id]);
+
+  const filteredCatalog = useMemo(() => {
+    const search = paletteSearch.trim().toLowerCase();
+    if (search.length === 0) return catalog;
+    return catalog.filter((item) =>
+      `${item.label} ${item.category} ${item.description}`.toLowerCase().includes(search),
+    );
+  }, [catalog, paletteSearch]);
+
+  const markChanged = useCallback(() => {
+    setDirty(true);
+    setValidation(null);
+    setNotice(null);
+  }, []);
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange<CanvasNode>[]) => {
+      setNodes((current) => applyNodeChanges(changes, current));
+      if (changes.some((change) => change.type !== 'select' && change.type !== 'dimensions')) {
+        markChanged();
+      }
+    },
+    [markChanged],
+  );
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange<Edge>[]) => {
+      setEdges((current) => applyEdgeChanges(changes, current));
+      if (changes.some((change) => change.type !== 'select')) markChanged();
+    },
+    [markChanged],
+  );
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      setEdges((current) =>
+        addEdge(
+          {
+            ...connection,
+            id: `edge-${connection.source}-${connection.target}-${Date.now()}`,
+            type: 'smoothstep',
+            style: { stroke: '#6b7f9f', strokeWidth: 1.6 },
+          },
+          current,
+        ),
+      );
+      markChanged();
+    },
+    [markChanged],
+  );
+
+  function onSelectionChange(selection: OnSelectionChangeParams) {
+    setSelectedNodeId(selection.nodes[0]?.id ?? null);
+    setSelectedEdgeId(selection.edges[0]?.id ?? null);
+  }
+
+  async function selectWorkflow(id: string) {
+    if (workflow?.id === id) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await api.workflow(id);
+      const canvas = workflowToCanvas(next, catalog);
+      setWorkflow(next);
+      setNodes(canvas.nodes);
+      setEdges(canvas.edges);
+      setDirty(false);
+      setValidation(null);
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+    } catch (loadError) {
+      setError(errorText(loadError));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function addNode(item: NodeCatalogItem) {
+    const sameTypeCount = nodes.filter((node) => node.data.nodeType === item.type).length;
+    const id = `${item.type}-${Date.now()}`;
+    const next: CanvasNode = {
+      id,
+      type: 'workflow',
+      position: {
+        x: 260 + ((nodes.length * 36) % 480),
+        y: 120 + ((nodes.length * 88) % 420),
+      },
+      data: {
+        label: sameTypeCount === 0 ? item.label : `${item.label} ${sameTypeCount + 1}`,
+        nodeType: item.type,
+        category: item.category,
+        description: item.description,
+        config: structuredClone(item.defaultConfig),
+      },
+      selected: true,
+    };
+    setNodes((current) => {
+      const deselected: CanvasNode[] = current.map((node) => ({
+        ...node,
+        selected: false,
+      }));
+      return [...deselected, next];
+    });
+    setSelectedNodeId(id);
+    setSelectedEdgeId(null);
+    markChanged();
+  }
+
+  function updateNodeLabel(event: ChangeEvent<HTMLInputElement>) {
+    const label = event.target.value;
+    setNodes((current) =>
+      current.map((node) =>
+        node.id === selectedNodeId ? { ...node, data: { ...node.data, label } } : node,
+      ),
+    );
+    markChanged();
+  }
+
+  function updateConfig(value: string) {
+    setConfigDraft(value);
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+        setConfigError('Configuration must be a JSON object.');
+        return;
+      }
+      setConfigError(null);
+      setNodes((current) =>
+        current.map((node) =>
+          node.id === selectedNodeId
+            ? { ...node, data: { ...node.data, config: parsed as Record<string, unknown> } }
+            : node,
+        ),
+      );
+      markChanged();
+    } catch {
+      setConfigError('Enter valid JSON before saving.');
+    }
+  }
+
+  function updateEdgeCondition(condition: string) {
+    setEdges((current) =>
+      current.map((edge) => (edge.id === selectedEdgeId ? { ...edge, label: condition } : edge)),
+    );
+    markChanged();
+  }
+
+  function removeSelection() {
+    if (selectedNodeId !== null) {
+      setNodes((current) => current.filter((node) => node.id !== selectedNodeId));
+      setEdges((current) =>
+        current.filter(
+          (edge) => edge.source !== selectedNodeId && edge.target !== selectedNodeId,
+        ),
+      );
+      setSelectedNodeId(null);
+    } else if (selectedEdgeId !== null) {
+      setEdges((current) => current.filter((edge) => edge.id !== selectedEdgeId));
+      setSelectedEdgeId(null);
+    }
+    markChanged();
+  }
+
+  async function saveWorkflow(): Promise<WorkflowDefinition | null> {
+    if (workflow === null || configError !== null) return null;
+    setBusyAction('save');
+    setNotice(null);
+    try {
+      const saved = await api.saveWorkflow(canvasToWorkflow(workflow, nodes, edges));
+      setWorkflow(saved);
+      setWorkflows((current) =>
+        current.map((item) => (item.id === saved.id ? saved : item)),
+      );
+      setDirty(false);
+      setNotice({ tone: 'success', text: `Saved version ${saved.version}.` });
+      return saved;
+    } catch (saveError) {
+      setNotice({ tone: 'error', text: errorText(saveError) });
+      return null;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function validateWorkflow() {
+    if (workflow === null) return;
+    setBusyAction('validate');
+    setNotice(null);
+    try {
+      if (dirty) {
+        const saved = await saveWorkflow();
+        if (saved === null) return;
+      }
+      const result = await api.validateWorkflow(workflow.id);
+      setValidation(result);
+      setNotice({
+        tone: result.valid ? 'success' : 'warning',
+        text: result.valid
+          ? 'Workflow is valid and ready to run.'
+          : `Validation found ${result.issues.length} issue${result.issues.length === 1 ? '' : 's'}.`,
+      });
+    } catch (validationError) {
+      setNotice({ tone: 'error', text: errorText(validationError) });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function runWorkflow() {
+    if (workflow === null) return;
+    setBusyAction('run');
+    setNotice(null);
+    try {
+      if (dirty) {
+        const saved = await saveWorkflow();
+        if (saved === null) return;
+      }
+      const run = await api.startRun(workflow.id);
+      sessionStorage.setItem('selectedRunId', run.id);
+      onNavigate('runs');
+    } catch (runError) {
+      setNotice({ tone: 'error', text: errorText(runError) });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  if (loading && workflow === null) return <LoadingState label="Opening workflow studio" />;
+  if (error !== null && workflow === null) return <ErrorState message={error} retry={() => void loadStudio()} />;
+  if (workflow === null) {
+    return (
+      <EmptyState
+        icon="studio"
+        title="No workflows yet"
+        message="Create a workflow through the API, then return here to design it visually."
+      />
+    );
+  }
+
+  return (
+    <div className="studio-page">
+      <div className="studio-toolbar">
+        <div className="workflow-title-area">
+          <div className="breadcrumb"><span>Workflows</span><Icon name="chevron" size={13} /></div>
+          <select
+            aria-label="Select workflow"
+            onChange={(event) => void selectWorkflow(event.target.value)}
+            value={workflow.id}
+          >
+            {workflows.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          <StatusBadge status={workflow.status} />
+          <span className="version-label">v{workflow.version}</span>
+          {dirty ? <span className="dirty-indicator">Unsaved</span> : null}
+        </div>
+        <div className="header-actions">
+          <button className="button ghost" disabled={busyAction !== null} onClick={() => void saveWorkflow()} type="button">
+            <Icon name="save" /> {busyAction === 'save' ? 'Saving…' : 'Save'}
+          </button>
+          <button className="button secondary" disabled={busyAction !== null} onClick={() => void validateWorkflow()} type="button">
+            <Icon name="check" /> {busyAction === 'validate' ? 'Validating…' : 'Validate'}
+          </button>
+          <button className="button primary" disabled={busyAction !== null} onClick={() => void runWorkflow()} type="button">
+            <Icon name="play" /> {busyAction === 'run' ? 'Starting…' : 'Run workflow'}
+          </button>
+        </div>
+      </div>
+      {notice !== null ? (
+        <div className={`toast toast-${notice.tone}`} role="status">
+          <Icon name={notice.tone === 'success' ? 'check' : 'warning'} />
+          <span>{notice.text}</span>
+          <button aria-label="Dismiss message" onClick={() => setNotice(null)} type="button"><Icon name="close" /></button>
+        </div>
+      ) : null}
+      <div className="studio-workspace">
+        <aside className="node-palette">
+          <div className="panel-title">
+            <div><span className="eyebrow">Components</span><h2>Node palette</h2></div>
+            <span className="count-pill">{catalog.length}</span>
+          </div>
+          <label className="search-field">
+            <span className="sr-only">Search nodes</span>
+            <Icon name="search" />
+            <input
+              onChange={(event) => setPaletteSearch(event.target.value)}
+              placeholder="Search nodes"
+              type="search"
+              value={paletteSearch}
+            />
+          </label>
+          <div className="palette-list">
+            {groupByCategory(filteredCatalog).map(([category, items]) => (
+              <section className="palette-group" key={category}>
+                <h3>{category}</h3>
+                {items.map((item) => (
+                  <button
+                    className="palette-item"
+                    key={item.type}
+                    onClick={() => addNode(item)}
+                    title={item.description}
+                    type="button"
+                  >
+                    <span className={`palette-icon tone-${category.toLowerCase()}`}>
+                      <Icon
+                        name={
+                          category === 'Triggers'
+                            ? 'trigger'
+                            : category === 'Data'
+                              ? 'data'
+                              : category === 'Agent'
+                                ? 'agent'
+                                : category === 'Human'
+                                  ? 'human'
+                                  : category === 'Connections'
+                                    ? 'connections'
+                                    : category === 'Control'
+                                      ? 'control'
+                                      : 'operations'
+                        }
+                      />
+                    </span>
+                    <span><strong>{item.label}</strong><small>{item.description}</small></span>
+                    <Icon name="plus" size={15} />
+                  </button>
+                ))}
+              </section>
+            ))}
+            {filteredCatalog.length === 0 ? <p className="inline-empty">No nodes match “{paletteSearch}”.</p> : null}
+          </div>
+        </aside>
+        <section className="flow-canvas" aria-label="Workflow canvas">
+          <div className="canvas-meta">
+            <span><Icon name="nodes" size={15} /> {nodes.length} nodes</span>
+            <span>{edges.length} connections</span>
+          </div>
+          <ReactFlow
+            colorMode="dark"
+            deleteKeyCode={['Backspace', 'Delete']}
+            edges={edges}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            nodeTypes={nodeTypes}
+            nodes={nodes}
+            onConnect={onConnect}
+            onEdgesChange={onEdgesChange}
+            onNodesChange={onNodesChange}
+            onSelectionChange={onSelectionChange}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background color="#263246" gap={24} size={1} variant={BackgroundVariant.Dots} />
+            <Controls position="bottom-left" showInteractive={false} />
+            <MiniMap
+              maskColor="rgba(8, 13, 22, 0.72)"
+              nodeColor="#33435e"
+              pannable
+              position="bottom-right"
+              zoomable
+            />
+          </ReactFlow>
+        </section>
+        <aside className="inspector">
+          <div className="panel-title">
+            <div><span className="eyebrow">Properties</span><h2>Inspector</h2></div>
+            {selectedNode !== null || selectedEdge !== null ? (
+              <button
+                aria-label="Clear selection"
+                className="icon-button"
+                onClick={() => {
+                  setSelectedNodeId(null);
+                  setSelectedEdgeId(null);
+                  setNodes((current) => current.map((node) => ({ ...node, selected: false })));
+                  setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
+                }}
+                type="button"
+              >
+                <Icon name="close" />
+              </button>
+            ) : null}
+          </div>
+          {selectedNode !== null ? (
+            <div className="inspector-content">
+              <div className="selected-node-summary">
+                <span className={`palette-icon tone-${selectedNode.data.category.toLowerCase()}`}><Icon name="nodes" /></span>
+                <div><strong>{selectedNode.data.label}</strong><span>{selectedNode.data.nodeType}</span></div>
+              </div>
+              <label className="form-field">
+                <span>Node label</span>
+                <input onChange={updateNodeLabel} value={selectedNode.data.label} />
+              </label>
+              <label className="form-field">
+                <span>Node ID</span>
+                <input disabled value={selectedNode.id} />
+              </label>
+              <label className="form-field">
+                <span>Configuration</span>
+                <textarea
+                  aria-describedby={configError === null ? undefined : 'config-error'}
+                  className={configError === null ? '' : 'invalid'}
+                  onChange={(event) => updateConfig(event.target.value)}
+                  rows={11}
+                  spellCheck={false}
+                  value={configDraft}
+                />
+                {configError === null ? <small>JSON object · changes apply as you type</small> : <small className="field-error" id="config-error">{configError}</small>}
+              </label>
+              <button className="button danger wide" onClick={removeSelection} type="button">Remove node</button>
+            </div>
+          ) : selectedEdge !== null ? (
+            <div className="inspector-content">
+              <div className="selected-node-summary">
+                <span className="palette-icon tone-control"><Icon name="connections" /></span>
+                <div><strong>Connection</strong><span>{selectedEdge.source} → {selectedEdge.target}</span></div>
+              </div>
+              <label className="form-field">
+                <span>Condition (optional)</span>
+                <input
+                  onChange={(event) => updateEdgeCondition(event.target.value)}
+                  placeholder="e.g. approved"
+                  value={typeof selectedEdge.label === 'string' ? selectedEdge.label : ''}
+                />
+              </label>
+              <button className="button danger wide" onClick={removeSelection} type="button">Remove connection</button>
+            </div>
+          ) : (
+            <div className="inspector-empty">
+              <span><Icon name="nodes" size={24} /></span>
+              <strong>Select a node</strong>
+              <p>Choose a node or connection on the canvas to inspect and edit it.</p>
+              <div className="keyboard-hint"><kbd>⌫</kbd><span>Delete selected</span></div>
+            </div>
+          )}
+          {validation !== null ? (
+            <div className="validation-panel">
+              <h3><Icon name={validation.valid ? 'check' : 'warning'} /> Validation</h3>
+              {validation.issues.length === 0 ? (
+                <p className="valid-message">No issues found. This workflow is ready to run.</p>
+              ) : (
+                <ul>
+                  {validation.issues.map((issue) => (
+                    <li className={`issue-${issue.level}`} key={`${issue.code}-${issue.nodeId ?? ''}`}>
+                      <strong>{issue.code}</strong><span>{issue.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function RunsView() {
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(
+    () => sessionStorage.getItem('selectedRunId'),
+  );
+  const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null);
+  const [events, setEvents] = useState<RunEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  const loadRuns = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
+    setError(null);
+    try {
+      const response = await api.runs();
+      const sorted = [...response.items].sort(
+        (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+      );
+      setRuns(sorted);
+      setSelectedRunId((current) => current ?? sorted[0]?.id ?? null);
+    } catch (loadError) {
+      setError(errorText(loadError));
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRuns();
+    const timer = window.setInterval(() => void loadRuns(true), 5_000);
+    return () => window.clearInterval(timer);
+  }, [loadRuns]);
+
+  useEffect(() => {
+    if (selectedRunId === null) {
+      setSelectedRun(null);
+      setEvents([]);
+      return;
+    }
+    sessionStorage.setItem('selectedRunId', selectedRunId);
+    setDetailLoading(true);
+    Promise.all([api.run(selectedRunId), api.events(selectedRunId)])
+      .then(([run, eventResponse]) => {
+        setSelectedRun(run);
+        setEvents(
+          [...eventResponse.items].sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+          ),
+        );
+      })
+      .catch((detailError: unknown) => setError(errorText(detailError)))
+      .finally(() => setDetailLoading(false));
+  }, [selectedRunId, runs]);
+
+  const filteredRuns = runs.filter((run) => {
+    const matchesQuery = `${run.workflowName} ${run.id}`.toLowerCase().includes(query.toLowerCase());
+    return matchesQuery && (statusFilter === 'all' || run.status === statusFilter);
+  });
+
+  const activeRuns = runs.filter((run) => ['queued', 'running', 'waiting'].includes(run.status)).length;
+  const successfulRuns = runs.filter((run) => run.status === 'succeeded').length;
+  const totalCost = runs.reduce((sum, run) => sum + run.costUsd, 0);
+
+  async function runAction(action: 'approve' | 'cancel') {
+    if (selectedRun === null) return;
+    setActionLoading(true);
+    setActionError(null);
+    try {
+      const updated =
+        action === 'approve'
+          ? await api.approveRun(selectedRun.id)
+          : await api.cancelRun(selectedRun.id);
+      setSelectedRun(updated);
+      await loadRuns(true);
+    } catch (actionFailure) {
+      setActionError(errorText(actionFailure));
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  return (
+    <div className="page">
+      <AppHeader eyebrow="Observability" title="Runs">
+        <button className="button secondary" onClick={() => void loadRuns()} type="button"><Icon name="refresh" /> Refresh</button>
+      </AppHeader>
+      <section className="summary-strip">
+        <div><span>All runs</span><strong>{runs.length}</strong></div>
+        <div><span>Active now</span><strong>{activeRuns}</strong></div>
+        <div><span>Successful</span><strong>{successfulRuns}</strong></div>
+        <div><span>Total cost</span><strong>${totalCost.toFixed(3)}</strong></div>
+      </section>
+      {loading ? <LoadingState label="Loading run history" /> : error !== null && runs.length === 0 ? (
+        <ErrorState message={error} retry={() => void loadRuns()} />
+      ) : runs.length === 0 ? (
+        <EmptyState icon="runs" title="No runs recorded" message="Run a workflow from Studio to see execution events and performance here." />
+      ) : (
+        <div className="runs-layout">
+          <section className="runs-list-panel">
+            <div className="list-tools">
+              <label className="search-field"><span className="sr-only">Search runs</span><Icon name="search" /><input onChange={(event) => setQuery(event.target.value)} placeholder="Search runs" type="search" value={query} /></label>
+              <select aria-label="Filter by status" onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
+                <option value="all">All statuses</option>
+                <option value="running">Running</option>
+                <option value="waiting">Waiting</option>
+                <option value="succeeded">Succeeded</option>
+                <option value="failed">Failed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div className="run-list" role="list">
+              {filteredRuns.map((run) => (
+                <button
+                  aria-pressed={run.id === selectedRunId}
+                  className={`run-list-item ${run.id === selectedRunId ? 'active' : ''}`}
+                  key={run.id}
+                  onClick={() => setSelectedRunId(run.id)}
+                  role="listitem"
+                  type="button"
+                >
+                  <span className={`run-state-dot status-${run.status}`} />
+                  <span className="run-main"><strong>{run.workflowName}</strong><small>{run.id}</small></span>
+                  <span className="run-side"><StatusBadge status={run.status} /><small>{formatDate(run.startedAt)}</small></span>
+                </button>
+              ))}
+              {filteredRuns.length === 0 ? <p className="inline-empty">No runs match these filters.</p> : null}
+            </div>
+          </section>
+          <section className="run-detail">
+            {detailLoading ? <LoadingState label="Loading run detail" /> : selectedRun === null ? (
+              <EmptyState icon="runs" title="Select a run" message="Choose a run to inspect its execution timeline." />
+            ) : (
+              <>
+                <header className="detail-header">
+                  <div><span className="eyebrow">Run {selectedRun.id}</span><h2>{selectedRun.workflowName}</h2><p>Workflow version {selectedRun.workflowVersion} · started {formatDate(selectedRun.startedAt)}</p></div>
+                  <div className="run-actions">
+                    <StatusBadge status={selectedRun.status} />
+                    {selectedRun.status === 'waiting' ? (
+                      <button className="button primary" disabled={actionLoading} onClick={() => void runAction('approve')} type="button">
+                        <Icon name="check" /> {actionLoading ? 'Approving…' : 'Approve'}
+                      </button>
+                    ) : null}
+                    {['queued', 'running', 'waiting'].includes(selectedRun.status) ? (
+                      <button className="button secondary" disabled={actionLoading} onClick={() => void runAction('cancel')} type="button">
+                        <Icon name="close" /> {actionLoading ? 'Updating…' : 'Cancel'}
+                      </button>
+                    ) : null}
+                  </div>
+                </header>
+                {actionError !== null ? <div className="run-error" role="alert"><Icon name="warning" /><div><strong>Action failed</strong><span>{actionError}</span></div></div> : null}
+                {selectedRun.error !== undefined ? <div className="run-error" role="alert"><Icon name="warning" /><div><strong>Run failed</strong><span>{selectedRun.error}</span></div></div> : null}
+                <div className="run-metrics">
+                  <div><Icon name="clock" /><span>Duration</span><strong>{formatDuration(selectedRun.durationMs)}</strong></div>
+                  <div><Icon name="cost" /><span>Cost</span><strong>${selectedRun.costUsd.toFixed(4)}</strong></div>
+                  <div><Icon name="person" /><span>Human touches</span><strong>{selectedRun.humanTouchpoints}</strong></div>
+                  <div><Icon name="success" /><span>Completed</span><strong>{formatDate(selectedRun.completedAt)}</strong></div>
+                </div>
+                <div className="timeline-heading"><div><span className="eyebrow">Execution log</span><h3>Event timeline</h3></div><span className="count-pill">{events.length} events</span></div>
+                {events.length === 0 ? (
+                  <EmptyState icon="clock" title="Awaiting events" message="The execution engine has not emitted events for this run yet." />
+                ) : (
+                  <ol className="timeline">
+                    {events.map((event, index) => (
+                      <li key={event.id}>
+                        <span className={`timeline-dot ${index === events.length - 1 ? 'latest' : ''}`} />
+                        <div className="timeline-card">
+                          <div><strong>{event.type.replaceAll('_', ' ')}</strong><time>{formatDate(event.timestamp)}</time></div>
+                          <p>{event.message}</p>
+                          {event.nodeId === undefined ? null : <span className="node-reference"><Icon name="nodes" size={13} /> {event.nodeId}</span>}
+                          {event.data === undefined || Object.keys(event.data).length === 0 ? null : <pre>{JSON.stringify(event.data, null, 2)}</pre>}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConnectionsView() {
+  const [connections, setConnections] = useState<ConnectionRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [form, setForm] = useState({ name: '', connector: 'HTTP', environment: 'development', scopes: '' });
+
+  const loadConnections = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setConnections((await api.connections()).items);
+    } catch (loadError) {
+      setError(errorText(loadError));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => void loadConnections(), [loadConnections]);
+
+  async function submitConnection(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setFormError(null);
+    try {
+      const created = await api.createConnection({
+        name: form.name.trim(),
+        connector: form.connector,
+        environment: form.environment.trim(),
+        scopes: form.scopes.split(',').map((scope) => scope.trim()).filter(Boolean),
+      });
+      setConnections((current) => [created, ...current]);
+      setForm({ name: '', connector: 'HTTP', environment: 'development', scopes: '' });
+      setShowForm(false);
+    } catch (submitError) {
+      setFormError(errorText(submitError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const healthy = connections.filter((connection) => connection.status === 'healthy').length;
+
+  return (
+    <div className="page">
+      <AppHeader eyebrow="Integration registry" title="Connections">
+        <button className="button primary" onClick={() => setShowForm((current) => !current)} type="button"><Icon name={showForm ? 'close' : 'plus'} /> {showForm ? 'Close' : 'New connection'}</button>
+      </AppHeader>
+      <p className="page-intro">Manage integration metadata and access scopes. Credentials are configured securely outside this dashboard.</p>
+      {showForm ? (
+        <form className="connection-form" onSubmit={(event) => void submitConnection(event)}>
+          <div className="form-intro"><span className="palette-icon tone-connections"><Icon name="connections" /></span><div><h2>Register connection</h2><p>Describe where this connector is used. No secrets or credentials are collected.</p></div></div>
+          <label className="form-field"><span>Name</span><input autoFocus onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="e.g. Production CRM" required value={form.name} /></label>
+          <label className="form-field"><span>Connector</span><select onChange={(event) => setForm({ ...form, connector: event.target.value })} value={form.connector}><option>HTTP</option><option>GitHub</option><option>Slack</option><option>PostgreSQL</option><option>Azure OpenAI</option><option>Custom</option></select></label>
+          <label className="form-field"><span>Environment</span><input onChange={(event) => setForm({ ...form, environment: event.target.value })} placeholder="development" required value={form.environment} /></label>
+          <label className="form-field"><span>Scopes</span><input onChange={(event) => setForm({ ...form, scopes: event.target.value })} placeholder="records:read, records:write" value={form.scopes} /><small>Comma-separated metadata only</small></label>
+          {formError === null ? null : <p className="form-error" role="alert">{formError}</p>}
+          <div className="form-actions"><button className="button ghost" onClick={() => setShowForm(false)} type="button">Cancel</button><button className="button primary" disabled={saving} type="submit">{saving ? 'Registering…' : 'Register connection'}</button></div>
+        </form>
+      ) : null}
+      <section className="summary-strip connection-summary">
+        <div><span>Registered</span><strong>{connections.length}</strong></div>
+        <div><span>Healthy</span><strong>{healthy}</strong></div>
+        <div><span>Needs attention</span><strong>{connections.length - healthy}</strong></div>
+        <div><span>Total usage</span><strong>{connections.reduce((sum, item) => sum + item.usageCount, 0)}</strong></div>
+      </section>
+      {loading ? <LoadingState label="Loading connections" /> : error !== null ? <ErrorState message={error} retry={() => void loadConnections()} /> : connections.length === 0 ? (
+        <EmptyState icon="connections" title="No connections registered" message="Add connection metadata so workflows can reference approved integrations." action={<button className="button primary" onClick={() => setShowForm(true)} type="button"><Icon name="plus" /> New connection</button>} />
+      ) : (
+        <div className="connection-grid">
+          {connections.map((connection) => (
+            <article className="connection-card" key={connection.id}>
+              <header><span className="connector-logo">{connection.connector.slice(0, 2).toUpperCase()}</span><div><h2>{connection.name}</h2><span>{connection.connector}</span></div><StatusBadge status={connection.status} /></header>
+              <dl><div><dt>Environment</dt><dd>{connection.environment}</dd></div><div><dt>Last checked</dt><dd>{formatDate(connection.lastCheckedAt)}</dd></div><div><dt>Usage</dt><dd>{connection.usageCount} runs</dd></div></dl>
+              <div className="scope-list" aria-label="Connection scopes">{connection.scopes.length === 0 ? <span className="muted">No scopes declared</span> : connection.scopes.map((scope) => <span key={scope}>{scope}</span>)}</div>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProposalsView({ onOpenStudio }: { onOpenStudio: () => void }) {
+  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
+  const [workflowId, setWorkflowId] = useState('');
+  const [goal, setGoal] = useState('');
+  const [proposal, setProposal] = useState<AgentProposal | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.workflows()
+      .then((response) => {
+        setWorkflows(response.items);
+        setWorkflowId(response.items[0]?.id ?? '');
+      })
+      .catch((loadError: unknown) => setError(errorText(loadError)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function generateProposal(event: FormEvent) {
+    event.preventDefault();
+    setGenerating(true);
+    setError(null);
+    try {
+      setProposal(await api.createProposal(goal.trim(), workflowId));
+    } catch (proposalError) {
+      setError(errorText(proposalError));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  if (loading) return <LoadingState label="Preparing the agent workspace" />;
+
+  const rationaleItems = proposal === null
+    ? []
+    : Array.isArray(proposal.rationale)
+      ? proposal.rationale
+      : [proposal.rationale];
+
+  return (
+    <div className="page proposals-page">
+      <AppHeader eyebrow="AI-assisted design" title="Agent Proposals" />
+      <div className="proposal-layout">
+        <section className="agent-composer">
+          <div className="agent-orb"><Icon name="agent" size={30} /></div>
+          <span className="eyebrow">Factory design agent</span>
+          <h2>What should this workflow achieve?</h2>
+          <p>Describe the operational goal. The agent will propose a bounded, inspectable workflow using approved node types.</p>
+          <form onSubmit={(event) => void generateProposal(event)}>
+            <label className="form-field"><span>Base workflow</span><select disabled={workflows.length === 0} onChange={(event) => setWorkflowId(event.target.value)} required value={workflowId}>{workflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name} · v{workflow.version}</option>)}</select></label>
+            <label className="goal-field"><span className="sr-only">Workflow goal</span><textarea maxLength={1000} onChange={(event) => setGoal(event.target.value)} placeholder="Example: Review incoming product requests, assess risk and feasibility, route high-risk decisions for approval, then notify the requestor." required rows={7} value={goal} /><span>{goal.length}/1000</span></label>
+            <button className="button primary wide" disabled={generating || workflowId.length === 0 || goal.trim().length < 8} type="submit"><Icon name="spark" /> {generating ? 'Designing proposal…' : 'Generate proposal'}</button>
+          </form>
+          <div className="agent-guardrails"><strong>Built-in guardrails</strong><span><Icon name="check" /> Approved catalog nodes only</span><span><Icon name="check" /> Explicit iteration and cost bounds</span><span><Icon name="check" /> Validation issues surfaced before use</span></div>
+        </section>
+        <section className="proposal-result" aria-live="polite">
+          {generating ? <LoadingState label="Designing your workflow" /> : error !== null ? <ErrorState message={error} retry={() => setError(null)} /> : proposal === null ? (
+            <EmptyState icon="agent" title="Your proposal will appear here" message="Give the design agent a clear goal to receive a workflow draft, rationale, and validation findings." />
+          ) : (
+            <>
+              <header className="proposal-header"><div><span className="eyebrow">Proposal {proposal.id}</span><h2>{proposal.workflow.name}</h2></div><StatusBadge status={proposal.issues.some((issue) => issue.level === 'error') ? 'needs-review' : 'ready'} /></header>
+              <div className="proposal-summary"><Icon name="spark" /><p>{proposal.summary}</p></div>
+              <div className="proposal-flow-preview">
+                {proposal.workflow.nodes.map((node, index) => (
+                  <div className="proposal-step" key={node.id}>
+                    <span>{index + 1}</span><div><strong>{node.label}</strong><small>{node.type}</small></div>
+                    {index < proposal.workflow.nodes.length - 1 ? <Icon name="chevron" /> : null}
+                  </div>
+                ))}
+              </div>
+              <div className="proposal-columns">
+                <div><h3>Why this design</h3><ol>{rationaleItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ol></div>
+                <div><h3>Validation</h3>{proposal.issues.length === 0 ? <p className="valid-message"><Icon name="check" /> No issues detected</p> : <ul className="proposal-issues">{proposal.issues.map((issue) => <li className={`issue-${issue.level}`} key={`${issue.code}-${issue.nodeId ?? ''}`}><strong>{issue.code}</strong><span>{issue.message}</span></li>)}</ul>}</div>
+              </div>
+              <div className="proposal-footer"><span>{proposal.workflow.nodes.length} nodes · {proposal.workflow.edges.length} connections</span><button className="button primary" onClick={onOpenStudio} type="button">Open Studio <Icon name="chevron" /></button></div>
+            </>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function FactoryView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
+  const [metrics, setMetrics] = useState<FactoryMetrics | null>(null);
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadMetrics = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [metricResponse, runResponse] = await Promise.all([api.factoryMetrics(), api.runs()]);
+      setMetrics(metricResponse);
+      setRuns(runResponse.items);
+    } catch (loadError) {
+      setError(errorText(loadError));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => void loadMetrics(), [loadMetrics]);
+
+  if (loading) return <LoadingState label="Calculating factory performance" />;
+  if (error !== null || metrics === null) return <ErrorState message={error ?? 'Metrics are unavailable.'} retry={() => void loadMetrics()} />;
+
+  const maxRuns = Math.max(...metrics.stageMetrics.map((item) => item.runs), 1);
+  const recentRuns = [...runs]
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+    .slice(0, 4);
+
+  return (
+    <div className="page factory-page">
+      <AppHeader eyebrow="Executive overview" title="Factory">
+        <button className="button secondary" onClick={() => void loadMetrics()} type="button"><Icon name="refresh" /> Refresh</button>
+      </AppHeader>
+      <section className="factory-hero">
+        <div><span className="eyebrow">Operational intelligence</span><h2>Your automation factory at a glance</h2><p>Monitor throughput, efficiency, quality, and human intervention across every workflow stage.</p></div>
+        <span className="live-indicator"><i /> Live metrics</span>
+      </section>
+      <section className="kpi-grid">
+        <KpiCard icon="runs" label="Throughput" value={metrics.throughput.toLocaleString()} note="runs completed" />
+        <KpiCard icon="cost" label="Cost per run" value={`$${metrics.costPerRun.toFixed(3)}`} note="average execution" />
+        <KpiCard icon="spark" label="Automation" value={formatPercent(metrics.automationPercent)} note="touchless completion" />
+        <KpiCard icon="person" label="Human touchpoints" value={metrics.humanTouchpoints.toFixed(1)} note="average per run" />
+        <KpiCard icon="success" label="Success rate" value={formatPercent(metrics.successRate)} note="all workflows" featured />
+      </section>
+      <div className="factory-grid">
+        <section className="stage-panel">
+          <div className="section-heading"><div><span className="eyebrow">Pipeline health</span><h2>Stage performance</h2></div><span>Success / total runs</span></div>
+          {metrics.stageMetrics.length === 0 ? <EmptyState icon="factory" title="No stage data yet" message="Stage metrics will populate after workflows complete." /> : (
+            <div className="stage-table">
+              <div className="stage-row stage-head"><span>Stage</span><span>Volume</span><span>Success</span><span>Avg. duration</span></div>
+              {metrics.stageMetrics.map((stage) => (
+                <div className="stage-row" key={stage.stage}>
+                  <strong>{stage.stage}</strong>
+                  <div className="volume-cell"><span style={{ width: `${Math.max(5, (stage.runs / maxRuns) * 100)}%` }} /><small>{stage.runs}</small></div>
+                  <span className={stage.successRate >= 0.9 || stage.successRate >= 90 ? 'metric-good' : 'metric-warn'}>{formatPercent(stage.successRate)}</span>
+                  <span>{formatDuration(stage.averageDurationMs)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+        <section className="recent-panel">
+          <div className="section-heading"><div><span className="eyebrow">Latest activity</span><h2>Recent runs</h2></div><button className="text-button" onClick={() => onNavigate('runs')} type="button">View all <Icon name="chevron" /></button></div>
+          {recentRuns.length === 0 ? <EmptyState icon="runs" title="Factory is ready" message="Start a workflow to see activity." /> : (
+            <div className="recent-runs">{recentRuns.map((run) => <button key={run.id} onClick={() => { sessionStorage.setItem('selectedRunId', run.id); onNavigate('runs'); }} type="button"><span className={`run-state-dot status-${run.status}`} /><span><strong>{run.workflowName}</strong><small>{formatDate(run.startedAt)}</small></span><StatusBadge status={run.status} /></button>)}</div>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function KpiCard({
+  icon,
+  label,
+  value,
+  note,
+  featured = false,
+}: {
+  icon: IconName;
+  label: string;
+  value: string;
+  note: string;
+  featured?: boolean;
+}) {
+  return (
+    <article className={`kpi-card ${featured ? 'featured' : ''}`}>
+      <span className="kpi-icon"><Icon name={icon} /></span>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{note}</small>
+    </article>
+  );
+}
