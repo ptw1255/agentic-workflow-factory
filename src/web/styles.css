@@ -258,6 +258,19 @@ h1, h2, h3, p { margin-top: 0; }
 .ide-layout { background: #090f19; display: grid; gap: 0; grid-template-columns: 190px minmax(420px, 1fr) minmax(330px, .85fr); height: calc(100vh - 67px); overflow: hidden; }
 .ide-explorer { background: #0b121e; border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; padding: 17px 10px; }
 .ide-explorer-title { align-items: center; color: var(--subtle); display: flex; font-size: 9px; justify-content: space-between; letter-spacing: .1em; padding: 0 7px 17px; text-transform: uppercase; }
+.ide-view-selector { display: grid; gap: 5px; margin: -7px 0 14px; }
+.ide-view-selector span { color: var(--subtle); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.ide-view-selector select { background: #111b2a; border: 1px solid #2a3b55; border-radius: 5px; color: #d9e5f5; font-size: 11px; padding: 7px 8px; }
+.workspace-command-strip { align-items: center; background: #0d1725; border-bottom: 1px solid var(--border); color: var(--subtle); display: flex; font-size: 11px; justify-content: space-between; padding: 7px 18px; }
+.workspace-command-strip span { align-items: center; display: inline-flex; gap: 7px; }
+.workspace-command-hint { color: #71839b; }
+.workspace-command-hint kbd { background: #18263a; border: 1px solid #2b3d57; border-radius: 3px; color: #b7c7db; font-size: 9px; margin-left: 3px; padding: 2px 4px; }
+.ide-bottom-panel { border-top: 1px solid var(--border); margin-top: 12px; }
+.ide-bottom-tabs { align-items: center; color: var(--subtle); display: flex; font-size: 10px; gap: 18px; padding: 9px 0 7px; text-transform: uppercase; }
+.ide-bottom-tabs strong { color: #d9e5f5; }
+.panel-count { background: #8d4b4b; border-radius: 9px; color: #fff; font-size: 9px; padding: 2px 6px; }
+.panel-count.clean { background: #245541; }
+.ide-bottom-content { color: #7689a3; font-size: 11px; padding: 3px 0 10px; }
 .ide-project { align-items: center; color: #b8c8df; display: flex; font-size: 10px; gap: 7px; padding: 7px; }
 .ide-project svg { color: var(--accent); }
 .ide-folder { align-items: center; color: #8091aa; display: flex; font-size: 9px; gap: 3px; letter-spacing: .08em; margin-top: 16px; padding: 0 5px 5px; text-transform: uppercase; }

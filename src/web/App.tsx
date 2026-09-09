@@ -49,7 +49,7 @@ const PROJECT_STORAGE_KEY = 'factory.projectId';
 const nodeTypes = { workflow: WorkflowNodeCard };
 const viewLabels: Record<ViewId, { label: string; icon: IconName }> = {
   studio: { label: 'Studio', icon: 'studio' },
-  runs: { label: 'Runs', icon: 'runs' },
+  runs: { label: 'Observe', icon: 'runs' },
   connections: { label: 'Connections', icon: 'connections' },
   proposals: { label: 'Agent Proposals', icon: 'agent' },
   factory: { label: 'Factory', icon: 'factory' },
@@ -442,7 +442,7 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
   const [hasRun, setHasRun] = useState(() => window.localStorage.getItem(`factory.onboarding.${projectId}.run`) === 'true');
   const [yamlSource, setYamlSource] = useState('');
   const [yamlDirty, setYamlDirty] = useState(false);
-  const [studioMode, setStudioMode] = useState<'tree' | 'canvas'>('tree');
+  const [studioMode, setStudioMode] = useState<'files' | 'tree' | 'canvas'>('files');
 
   const loadStudio = useCallback(async () => {
     setLoading(true);
@@ -799,10 +799,6 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
           {dirty ? <span className="dirty-indicator">Unsaved</span> : null}
         </div>
         <div className="header-actions">
-          <div className="view-toggle" role="group" aria-label="Studio view">
-            <button className={studioMode === 'tree' ? 'active' : ''} onClick={() => setStudioMode('tree')} type="button"><Icon name="nodes" size={14} /> Tree</button>
-            <button className={studioMode === 'canvas' ? 'active' : ''} onClick={() => setStudioMode('canvas')} type="button"><Icon name="studio" size={14} /> Canvas</button>
-          </div>
           <button className="button ghost" disabled={busyAction !== null} onClick={() => void saveWorkflow()} type="button">
             <Icon name="save" /> {busyAction === 'save' ? 'Saving…' : 'Save'}
           </button>
@@ -814,23 +810,7 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
           </button>
         </div>
       </div>
-      {(() => {
-        const steps = [
-          { label: 'Create a workflow', detail: 'Start from the seeded workflow or clone a template.', complete: workflow !== null },
-          { label: 'Define an agent box', detail: 'Declare purpose, tools, limits, boundaries, and telemetry rules.', complete: workflow.agents.length > 0 },
-          { label: 'Add a guardrail', detail: 'Use an approval node or explicit agent approval gate before side effects.', complete: workflow.nodes.some((node) => node.type === 'approval') || workflow.agents.some((agent) => agent.approval.beforeSideEffects) },
-          { label: 'Run a dry test', detail: 'Validate, run locally, and inspect the resulting evidence.', complete: hasRun },
-          { label: 'Observe the loop', detail: 'Runtime logs, metrics, traces, and 48-hour retention are active.', complete: true },
-        ];
-        return steps.every((step) => step.complete) ? null : (
-          <section className="onboarding-card" aria-label="Loop setup checklist">
-            <div className="onboarding-heading"><div><span className="eyebrow">First run</span><h2>Set up this loop</h2><p>Move from a definition to a safe, observable workflow in five steps.</p></div><span className="count-pill">{steps.filter((step) => step.complete).length}/{steps.length}</span></div>
-            <ol className="onboarding-steps">
-              {steps.map((step) => <li className={step.complete ? 'complete' : ''} key={step.label}><span className="onboarding-step-icon"><Icon name={step.complete ? 'check' : 'chevron'} size={14} /></span><div><strong>{step.label}</strong><small>{step.detail}</small></div></li>)}
-            </ol>
-          </section>
-        );
-      })()}
+      <div className="workspace-command-strip"><span><Icon name="code" size={14} /> Source is the workflow definition</span><span className="workspace-command-hint"><kbd>⌘</kbd><kbd>S</kbd> save · <kbd>⌘</kbd><kbd>↵</kbd> run</span></div>
       {notice !== null ? (
         <div className={`toast toast-${notice.tone}`} role="status">
           <Icon name={notice.tone === 'success' ? 'check' : 'warning'} />
@@ -1038,6 +1018,8 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
           ) : null}
         </aside>
       </div> : <OperationalTree
+        mode={studioMode}
+        onModeChange={setStudioMode}
         dirty={yamlDirty}
         onCanvas={() => setStudioMode('canvas')}
         onSourceChange={(value) => { setYamlSource(value); setYamlDirty(true); }}
@@ -1066,6 +1048,8 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
 function OperationalTree({
   workflow,
   source,
+  mode,
+  onModeChange,
   onCanvas,
   projectId,
   dirty,
@@ -1074,6 +1058,8 @@ function OperationalTree({
 }: {
   workflow: WorkflowDefinition;
   source: string;
+  mode: 'files' | 'tree';
+  onModeChange: (mode: 'files' | 'tree' | 'canvas') => void;
   onCanvas: () => void;
   projectId: string;
   dirty: boolean;
@@ -1101,6 +1087,7 @@ function OperationalTree({
     <div className="ide-layout">
       <aside className="ide-explorer">
         <div className="ide-explorer-title"><span className="eyebrow">Explorer</span><Icon name="search" size={14} /></div>
+        <label className="ide-view-selector"><span>View</span><select aria-label="Workspace view" onChange={(event) => onModeChange(event.target.value as 'files' | 'tree' | 'canvas')} value={mode}><option value="files">Files</option><option value="tree">Tree</option><option value="canvas">Canvas</option></select></label>
         <div className="ide-project"><Icon name="factory" size={15} /><strong>{workflow.projectId ?? 'project'}</strong></div>
         <div className="ide-folder"><Icon name="chevron" size={12} /> workflows</div>
         <button className="ide-file active" type="button"><Icon name="code" size={14} /> project.yaml</button>
@@ -1115,6 +1102,7 @@ function OperationalTree({
         <div className="ide-editor-heading"><div><span className="eyebrow">Declarative source</span><h2>Project definition</h2><p>Author the loop in YAML. Apply compiles it into the runtime model.</p></div><div className="ide-editor-actions"><span className={dirty ? 'ide-dirty' : 'ide-clean'}>{dirty ? 'Unsaved changes' : 'Synced'}</span><button className="button primary" disabled={!dirty || busy} onClick={() => void applyYaml()} type="button"><Icon name="save" size={14} /> {busy ? 'Applying…' : 'Apply YAML'}</button><button className="icon-button" onClick={onCanvas} title="Open canvas compatibility view" type="button"><Icon name="studio" size={15} /></button></div></div>
         <div className="yaml-editor-wrap"><div className="yaml-line-numbers" aria-hidden="true">{source.split('\n').map((_, index) => <span key={index}>{index + 1}</span>)}</div><textarea aria-label="Project YAML editor" className="yaml-editor" onChange={(event) => onSourceChange(event.target.value)} spellCheck={false} value={source} /></div>
         {error === null ? <small className="ide-hint">Review the compiled tree on the right, then apply the file when it is ready. Invalid definitions never replace the active runtime.</small> : <div className="ide-error"><Icon name="warning" size={14} /> {error}</div>}
+        <div className="ide-bottom-panel"><div className="ide-bottom-tabs"><strong>Problems</strong><span>Run Output</span><span className={error === null ? 'panel-count clean' : 'panel-count'}>{error === null ? 0 : 1}</span></div><div className="ide-bottom-content">{error === null ? <span>No problems detected in the current source.</span> : <span className="field-error">{error}</span>}</div></div>
       </section>
       <section className="operational-tree-panel ide-tree-panel">
         <div className="operational-heading"><div><span className="eyebrow">Operational tree</span><h2>{workflow.name}</h2><p>{workflow.description || 'Declarative workflow definition'}</p></div><span className="status-badge status-draft">v{workflow.version}</span></div>
@@ -1235,7 +1223,7 @@ function RunsView() {
 
   return (
     <div className="page">
-      <AppHeader eyebrow="Observability" title="Runs">
+      <AppHeader eyebrow="Observability" title="Observe">
         <button className="button secondary" onClick={() => void loadRuns()} type="button"><Icon name="refresh" /> Refresh</button>
       </AppHeader>
       <section className="summary-strip">
