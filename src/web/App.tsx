@@ -32,6 +32,7 @@ import type {
   ConnectionRecord,
   FactoryMetrics,
   NodeCatalogItem,
+  ProjectRecord,
   RunEvent,
   RunRecord,
   ValidationIssue,
@@ -41,6 +42,9 @@ import type {
   WorkflowEdge,
   WorkflowNode,
 } from './types';
+
+const TENANT_STORAGE_KEY = 'factory.tenantId';
+const PROJECT_STORAGE_KEY = 'factory.projectId';
 
 const nodeTypes = { workflow: WorkflowNodeCard };
 const viewLabels: Record<ViewId, { label: string; icon: IconName }> = {
@@ -119,6 +123,61 @@ function ErrorState({ message, retry }: { message: string; retry: () => void }) 
   );
 }
 
+function ProjectSwitcher({
+  projects,
+  currentProjectId,
+  onSelect,
+  onCreate,
+}: {
+  projects: ProjectRecord[];
+  currentProjectId: string;
+  onSelect: (projectId: string) => void;
+  onCreate: (name: string, description: string) => Promise<void>;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (name.trim().length === 0) return;
+    setError(null);
+    try {
+      await onCreate(name.trim(), description.trim());
+      setName('');
+      setDescription('');
+      setCreating(false);
+    } catch (createError) {
+      setError(errorText(createError));
+    }
+  }
+
+  return (
+    <section className="project-switcher" aria-label="Projects">
+      <span className="nav-section-label">Current loop</span>
+      <select
+        aria-label="Select project loop"
+        onChange={(event) => onSelect(event.target.value)}
+        value={currentProjectId}
+      >
+        {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+      </select>
+      <button className="project-create-button" onClick={() => setCreating((value) => !value)} type="button">
+        <Icon name={creating ? 'close' : 'plus'} size={13} /> {creating ? 'Close' : 'New loop'}
+      </button>
+      {creating ? (
+        <form className="project-create-form" onSubmit={(event) => void submit(event)}>
+          <input aria-label="Loop name" autoFocus onChange={(event) => setName(event.target.value)} placeholder="Loop name" required value={name} />
+          <input aria-label="Loop description" onChange={(event) => setDescription(event.target.value)} placeholder="What should it do?" value={description} />
+          {error === null ? null : <small className="field-error">{error}</small>}
+          <button className="button primary wide" type="submit">Create loop</button>
+        </form>
+      ) : null}
+    </section>
+  );
+}
+
 function EmptyState({
   icon,
   title,
@@ -163,6 +222,10 @@ function AppHeader({
 export function App() {
   const [view, setViewState] = useState<ViewId>(readView);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [scopeLoading, setScopeLoading] = useState(true);
+  const [scopeError, setScopeError] = useState<string | null>(null);
 
   useEffect(() => {
     const onHashChange = () => setViewState(readView());
@@ -170,10 +233,56 @@ export function App() {
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
+  const loadProjects = useCallback(async () => {
+    setScopeError(null);
+    try {
+      const tenants = await api.tenants();
+      const tenantId = window.localStorage.getItem(TENANT_STORAGE_KEY) ?? tenants.items[0]?.id ?? 'tenant-local';
+      window.localStorage.setItem(TENANT_STORAGE_KEY, tenantId);
+      const response = await api.projects();
+      setProjects(response.items);
+      const stored = window.localStorage.getItem(PROJECT_STORAGE_KEY);
+      const selected = response.items.find((project) => project.id === stored) ?? response.items[0];
+      if (selected !== undefined) {
+        window.localStorage.setItem(PROJECT_STORAGE_KEY, selected.id);
+        setProjectId(selected.id);
+      }
+    } catch (loadError) {
+      setScopeError(errorText(loadError));
+    } finally {
+      setScopeLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProjects();
+  }, [loadProjects]);
+
+  function selectProject(nextProjectId: string) {
+    window.localStorage.setItem(PROJECT_STORAGE_KEY, nextProjectId);
+    sessionStorage.removeItem('selectedRunId');
+    setProjectId(nextProjectId);
+  }
+
+  async function createProject(name: string, description: string) {
+    const created = await api.createProject({ name, description });
+    const source = (await api.workflows()).items[0];
+    if (source !== undefined) {
+      await api.cloneWorkflow(created.id, source.id, `${name} workflow`);
+    }
+    setProjects((current) => [...current, created]);
+    selectProject(created.id);
+  }
+
   function setView(next: ViewId) {
     window.location.hash = `/${next}`;
     setViewState(next);
     setMobileNavOpen(false);
+  }
+
+  if (scopeLoading) return <LoadingState label="Preparing your workspace" />;
+  if (scopeError !== null || projectId === null) {
+    return <ErrorState message={scopeError ?? 'No project is available.'} retry={() => void loadProjects()} />;
   }
 
   return (
@@ -186,6 +295,12 @@ export function App() {
             <span>Workflow Factory</span>
           </div>
         </div>
+        <ProjectSwitcher
+          currentProjectId={projectId}
+          onCreate={createProject}
+          onSelect={selectProject}
+          projects={projects}
+        />
         <nav aria-label="Primary navigation">
           <span className="nav-section-label">Build & operate</span>
           {(Object.entries(viewLabels) as Array<[ViewId, (typeof viewLabels)[ViewId]]>).map(
@@ -228,11 +343,11 @@ export function App() {
           <div className="mobile-brand"><Icon name="spark" /> Workflow Factory</div>
           <span className="system-dot" />
         </div>
-        {view === 'studio' ? <StudioView onNavigate={setView} /> : null}
-        {view === 'runs' ? <RunsView /> : null}
-        {view === 'connections' ? <ConnectionsView /> : null}
-        {view === 'proposals' ? <ProposalsView onOpenStudio={() => setView('studio')} /> : null}
-        {view === 'factory' ? <FactoryView onNavigate={setView} /> : null}
+        {view === 'studio' ? <StudioView key={projectId} onNavigate={setView} projectId={projectId} /> : null}
+        {view === 'runs' ? <RunsView key={projectId} /> : null}
+        {view === 'connections' ? <ConnectionsView key={projectId} /> : null}
+        {view === 'proposals' ? <ProposalsView key={projectId} onOpenStudio={() => setView('studio')} /> : null}
+        {view === 'factory' ? <FactoryView key={projectId} onNavigate={setView} /> : null}
       </main>
     </div>
   );
@@ -303,7 +418,7 @@ function canvasToWorkflow(
   };
 }
 
-function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
+function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => void; projectId: string }) {
   const [catalog, setCatalog] = useState<NodeCatalogItem[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [workflow, setWorkflow] = useState<WorkflowDefinition | null>(null);
@@ -324,6 +439,7 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
   const [dirty, setDirty] = useState(false);
   const [agentDraft, setAgentDraft] = useState('[]');
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [hasRun, setHasRun] = useState(() => window.localStorage.getItem(`factory.onboarding.${projectId}.run`) === 'true');
 
   const loadStudio = useCallback(async () => {
     setLoading(true);
@@ -635,6 +751,8 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
         if (saved === null) return;
       }
       const run = await api.startRun(workflow.id);
+      window.localStorage.setItem(`factory.onboarding.${projectId}.run`, 'true');
+      setHasRun(true);
       sessionStorage.setItem('selectedRunId', run.id);
       onNavigate('runs');
     } catch (runError) {
@@ -684,6 +802,23 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
           </button>
         </div>
       </div>
+      {(() => {
+        const steps = [
+          { label: 'Create a workflow', detail: 'Start from the seeded workflow or clone a template.', complete: workflow !== null },
+          { label: 'Define an agent box', detail: 'Declare purpose, tools, limits, boundaries, and telemetry rules.', complete: workflow.agents.length > 0 },
+          { label: 'Add a guardrail', detail: 'Use an approval node or explicit agent approval gate before side effects.', complete: workflow.nodes.some((node) => node.type === 'approval') || workflow.agents.some((agent) => agent.approval.beforeSideEffects) },
+          { label: 'Run a dry test', detail: 'Validate, run locally, and inspect the resulting evidence.', complete: hasRun },
+          { label: 'Observe the loop', detail: 'Runtime logs, metrics, traces, and 48-hour retention are active.', complete: true },
+        ];
+        return steps.every((step) => step.complete) ? null : (
+          <section className="onboarding-card" aria-label="Loop setup checklist">
+            <div className="onboarding-heading"><div><span className="eyebrow">First run</span><h2>Set up this loop</h2><p>Move from a definition to a safe, observable workflow in five steps.</p></div><span className="count-pill">{steps.filter((step) => step.complete).length}/{steps.length}</span></div>
+            <ol className="onboarding-steps">
+              {steps.map((step) => <li className={step.complete ? 'complete' : ''} key={step.label}><span className="onboarding-step-icon"><Icon name={step.complete ? 'check' : 'chevron'} size={14} /></span><div><strong>{step.label}</strong><small>{step.detail}</small></div></li>)}
+            </ol>
+          </section>
+        );
+      })()}
       {notice !== null ? (
         <div className={`toast toast-${notice.tone}`} role="status">
           <Icon name={notice.tone === 'success' ? 'check' : 'warning'} />

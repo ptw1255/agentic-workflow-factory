@@ -75,10 +75,11 @@ every 15 minutes and removes older records.
 The runtime is one shared installation that can host multiple isolated projects
 (the product abstraction for a loop). A tenant owns projects; workflows, agent boxes,
 connections, runs, proposals, and telemetry are scoped to a project. Existing local
-data is migrated into `tenant-local` / `project-local`. API clients can select a
-scope with `X-Tenant-ID` and `X-Project-ID` headers; omitted headers use the local
-defaults. Create a new project with `POST /api/projects`, then clone a workflow into
-it with `POST /api/projects/:projectId/workflows`.
+data is migrated into `tenant-local` / `project-local`. The Studio sidebar provides
+the loop switcher and a guided first-run checklist; API clients can select a scope
+with `X-Tenant-ID` and `X-Project-ID` headers. Create a new project with
+`POST /api/projects`, then clone a workflow into it with
+`POST /api/projects/:projectId/workflows`.
 
 ### Phoenix traces (optional)
 

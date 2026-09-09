@@ -5,6 +5,8 @@ import type {
   NodeCatalogItem,
   RunEvent,
   RunRecord,
+  ProjectRecord,
+  TenantRecord,
   ValidationResult,
   WorkflowDefinition,
 } from './types';
@@ -18,10 +20,14 @@ interface ErrorPayload {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const tenantId = window.localStorage.getItem('factory.tenantId');
+  const projectId = window.localStorage.getItem('factory.projectId');
   const response = await fetch(path, {
     ...init,
     headers: {
       Accept: 'application/json',
+      ...(tenantId === null ? {} : { 'X-Tenant-ID': tenantId }),
+      ...(projectId === null ? {} : { 'X-Project-ID': projectId }),
       ...(init?.body === undefined ? {} : { 'Content-Type': 'application/json' }),
       ...init?.headers,
     },
@@ -35,6 +41,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  tenants: () => request<ItemsResponse<TenantRecord>>('/api/tenants'),
+  projects: () => request<ItemsResponse<ProjectRecord>>('/api/projects'),
+  createProject: (input: { name: string; description: string }) =>
+    request<ProjectRecord>('/api/projects', { method: 'POST', body: JSON.stringify(input) }),
+  cloneWorkflow: (projectId: string, sourceWorkflowId: string, name?: string) =>
+    request<WorkflowDefinition>(`/api/projects/${encodeURIComponent(projectId)}/workflows`, {
+      method: 'POST',
+      body: JSON.stringify({ sourceWorkflowId, ...(name === undefined ? {} : { name }) }),
+    }),
   catalog: () => request<ItemsResponse<NodeCatalogItem>>('/api/catalog/nodes'),
   workflows: () => request<ItemsResponse<WorkflowDefinition>>('/api/workflows'),
   workflow: (id: string) =>
