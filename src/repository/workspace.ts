@@ -9,6 +9,7 @@ const ALLOWED_CHECKS = new Set(['npm test', 'npm run typecheck', 'npm run build'
 
 export interface RepositoryEntry { path: string; kind: 'file' | 'directory'; size?: number }
 export interface CheckResult { command: string; exitCode: number; durationMs: number; output: string; timedOut: boolean }
+export interface PatchArtifact { id: string; baseRevision: string; changedPaths: string[]; patch: string; createdAt: string }
 
 function truncate(value: string): string { return value.length > MAX_OUTPUT ? `${value.slice(0, MAX_OUTPUT)}\n… output truncated` : value; }
 
@@ -40,6 +41,23 @@ export class RepositoryWorkspace {
   public async diff(): Promise<string> {
     const result = await execFileAsync('git', ['-C', this.root, 'diff', '--no-ext-diff', '--'], { maxBuffer: MAX_OUTPUT * 2 });
     return truncate(`${result.stdout}${result.stderr}`);
+  }
+
+  public async patchArtifact(): Promise<PatchArtifact> {
+    const [revision, patch, paths] = await Promise.all([this.revision(), this.diff(), this.changedPaths()]);
+    const createdAt = new Date().toISOString();
+    const id = `sha256:${(await import('node:crypto')).createHash('sha256').update(JSON.stringify({ revision, patch, paths })).digest('hex')}`;
+    return { id, baseRevision: revision, changedPaths: paths, patch, createdAt };
+  }
+
+  public async revision(): Promise<string> {
+    const result = await execFileAsync('git', ['-C', this.root, 'rev-parse', 'HEAD']);
+    return result.stdout.trim();
+  }
+
+  public async changedPaths(): Promise<string[]> {
+    const result = await execFileAsync('git', ['-C', this.root, 'diff', '--name-only', '--']);
+    return result.stdout.split('\n').map((value) => value.trim()).filter(Boolean);
   }
 
   public async runCheck(command: string, timeoutMs = 120_000): Promise<CheckResult> {

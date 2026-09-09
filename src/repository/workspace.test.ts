@@ -23,4 +23,13 @@ describe('RepositoryWorkspace', () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
     expect(result.output.length).toBeLessThanOrEqual(20_020);
   });
+
+  it('creates a content-addressed patch artifact with revision provenance', async () => {
+    const workspace = await RepositoryWorkspace.open(process.cwd());
+    const artifact = await workspace.patchArtifact();
+    expect(artifact.id).toMatch(/^sha256:/);
+    expect(artifact.baseRevision).toMatch(/^[0-9a-f]{40}$/);
+    expect(typeof artifact.patch).toBe('string');
+    expect(Array.isArray(artifact.changedPaths)).toBe(true);
+  });
 });
