@@ -23,6 +23,26 @@ export interface ProjectRecord {
   createdAt: string;
 }
 
+export interface ProjectFileRecord {
+  tenantId: string;
+  projectId: string;
+  path: string;
+  content: string;
+  sha256: string;
+  updatedAt: string;
+}
+
+export interface ArtifactRecord {
+  tenantId: string;
+  projectId: string;
+  id: string;
+  environment: string;
+  compilerVersion: string;
+  sources: Array<{ path: string; sha256: string }>;
+  workflows: WorkflowDefinition[];
+  createdAt: string;
+}
+
 export interface Position {
   x: number;
   y: number;
@@ -127,6 +147,7 @@ export interface RunRecord {
   workflowId: string;
   workflowName: string;
   workflowVersion: number;
+  artifactId?: string;
   traceId: string;
   status: RunStatus;
   startedAt: string;
@@ -222,4 +243,6 @@ export interface PlatformState {
   events: RunEvent[];
   connections: ConnectionRecord[];
   proposals: AgentProposal[];
+  files: ProjectFileRecord[];
+  artifacts: ArtifactRecord[];
 }
