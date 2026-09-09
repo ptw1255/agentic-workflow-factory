@@ -1,0 +1,71 @@
+apiVersion: factory.agentic/v1
+kind: Project
+metadata:
+  id: project-code-review
+  name: Code review loop
+  description: Review a change, run deterministic checks, and route the result for approval.
+
+agents:
+  - id: reviewer
+    version: 1
+    name: Code reviewer
+    purpose: Review a proposed change for correctness and risk.
+    instructions: Produce a concise review grounded in the supplied diff and test evidence.
+    skills: [code-review, test-analysis]
+    tools: []
+    model:
+      routingAlias: default-safe
+    inputSchema:
+      type: object
+    outputSchema:
+      type: object
+    boundaries:
+      allowedConnections: []
+      allowedRepositories: []
+      protectedPaths: [.github/workflows]
+      network: deny-by-default
+      dataClasses: [internal]
+    limits:
+      maxIterations: 3
+      maxCostUsd: 0.05
+      maxDurationMs: 60000
+    termination:
+      successConditions: [Review is complete.]
+      failureConditions: []
+      escalationConditions: [Risk cannot be classified.]
+    approval:
+      beforeSideEffects: false
+      beforeTools: []
+    observability:
+      captureInputs: false
+      captureOutputs: false
+      redactedFields: [prompt, output, secret]
+
+workflows:
+  - id: workflow-code-review
+    name: Review and test
+    description: Review a change, run checks, and require human approval.
+    trigger: manual
+    steps:
+      - id: prepare
+        name: Prepare context
+        kind: deterministic
+        operation: trim
+        config:
+          value: proposed change
+      - id: review
+        name: Review change
+        kind: agent
+        agent: reviewer
+        goal: Review the change and identify correctness or risk issues.
+        maxIterations: 3
+      - id: approve
+        name: Approve result
+        kind: human
+        instructions: Review the agent assessment and test evidence.
+      - id: output
+        name: Return outcome
+        kind: consumer
+        type: output
+        config:
+          value: ready-for-review

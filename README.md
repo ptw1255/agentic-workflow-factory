@@ -46,6 +46,35 @@ npm run demo
 npm run server
 ```
 
+### YAML-first authoring
+
+Project YAML is the source of truth for loop topology, agent boxes, work-unit
+contracts, and runtime policy. The database stores the compiled runtime index,
+immutable versions, run state, and 48-hour telemetry; it is not the authoring
+surface. Keep YAML in Git, review it like code, and use the Studio primarily to
+inspect the operational tree or open the legacy canvas when visual editing helps.
+
+The repository includes a complete example at
+[`examples/code-review-loop.yaml`](examples/code-review-loop.yaml). Validate or
+inspect any project definition with the local CLI:
+
+```bash
+npm run factory -- validate examples/code-review-loop.yaml
+npm run factory -- plan examples/code-review-loop.yaml
+npm run factory -- tree examples/code-review-loop.yaml
+npm run factory -- run examples/code-review-loop.yaml workflow-code-review
+```
+
+The control plane exposes the same workflow for automation and GitOps tooling:
+
+```text
+GET  /api/projects/:projectId/declarative.yaml  # export the project
+POST /api/projects/:projectId/declarative       # replace project config from { source }
+```
+
+Imports are validated and compiled through the same canonical schemas used by the
+runtime. A failed import leaves the existing project configuration untouched.
+
 ## Run with Docker Desktop
 
 Docker Desktop can run the app and PostgreSQL together:
@@ -121,9 +150,9 @@ propose changes, while policy and human approval control promotion.
 
 ## Product surfaces
 
-- **Studio:** edit a typed workflow on a React Flow canvas, configure nodes, validate,
-  define policy-bound agent boxes, save immutable versions, retrieve version history
-  through the API, and launch runs.
+- **Studio:** IDE-style declarative workspace with a project explorer, editable YAML
+  source, compile/apply diagnostics, operational tree, agent-box inspection, and an
+  optional React Flow canvas for compatibility editing.
 - **Runs:** inspect status, cost, human touchpoints, node events, agent iterations,
   failures, and approval waits.
 - **Connections:** manage non-secret connector metadata, environment bindings, scopes,

@@ -107,6 +107,50 @@ describe('platform API', () => {
     expect(crossTenantRead.json<{ items: unknown[] }>().items).toHaveLength(0);
   });
 
+  it('exports and imports a project as declarative YAML', async () => {
+    const exported = await app.inject({
+      method: 'GET',
+      url: '/api/projects/project-local/declarative.yaml',
+      headers: { 'x-tenant-id': 'tenant-local' },
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.headers['content-type']).toContain('text/yaml');
+    expect(exported.body).toContain('apiVersion: factory.agentic/v1');
+
+    const createProject = await app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      headers: { 'x-tenant-id': 'tenant-local' },
+      payload: { name: 'Declarative loop' },
+    });
+    const projectId = createProject.json<{ id: string }>().id;
+    const imported = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/declarative`,
+      headers: { 'x-tenant-id': 'tenant-local' },
+      payload: { source: exported.body },
+    });
+    expect(imported.statusCode).toBe(200);
+    expect(imported.json<{ project: { id: string }; workflows: Array<{ projectId: string }> }>()).toMatchObject({
+      project: { id: projectId },
+      workflows: [expect.objectContaining({ projectId })],
+    });
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/declarative`,
+      headers: { 'x-tenant-id': 'tenant-local' },
+      payload: { source: 'kind: NotAProject' },
+    });
+    expect(invalid.statusCode).toBe(422);
+    const afterInvalid = await app.inject({
+      method: 'GET',
+      url: '/api/workflows',
+      headers: { 'x-tenant-id': 'tenant-local', 'x-project-id': projectId },
+    });
+    expect(afterInvalid.json<{ items: unknown[] }>().items).toHaveLength(1);
+  });
+
   it('creates a managed connection without accepting credentials', async () => {
     const response = await app.inject({
       method: 'POST',

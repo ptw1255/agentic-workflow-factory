@@ -40,6 +40,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
+async function requestText(path: string): Promise<string> {
+  const tenantId = window.localStorage.getItem('factory.tenantId');
+  const projectId = window.localStorage.getItem('factory.projectId');
+  const response = await fetch(path, {
+    headers: {
+      Accept: 'text/yaml',
+      ...(tenantId === null ? {} : { 'X-Tenant-ID': tenantId }),
+      ...(projectId === null ? {} : { 'X-Project-ID': projectId }),
+    },
+  });
+  if (!response.ok) throw new Error(`Request failed with status ${response.status}.`);
+  return response.text();
+}
+
 export const api = {
   tenants: () => request<ItemsResponse<TenantRecord>>('/api/tenants'),
   projects: () => request<ItemsResponse<ProjectRecord>>('/api/projects'),
@@ -50,6 +64,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ sourceWorkflowId, ...(name === undefined ? {} : { name }) }),
     }),
+  declarativeYaml: (projectId: string) =>
+    requestText(`/api/projects/${encodeURIComponent(projectId)}/declarative.yaml`),
+  importDeclarativeYaml: (projectId: string, source: string) =>
+    request<{ project: ProjectRecord; workflows: WorkflowDefinition[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/declarative`,
+      { method: 'POST', body: JSON.stringify({ source }) },
+    ),
   catalog: () => request<ItemsResponse<NodeCatalogItem>>('/api/catalog/nodes'),
   workflows: () => request<ItemsResponse<WorkflowDefinition>>('/api/workflows'),
   workflow: (id: string) =>

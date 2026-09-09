@@ -122,3 +122,7 @@ export const cloneWorkflowSchema = z.object({
   sourceWorkflowId: z.string().min(1),
   name: z.string().trim().min(1).max(100).optional(),
 });
+
+export const declarativeImportSchema = z.object({
+  source: z.string().min(1).max(1_000_000),
+});

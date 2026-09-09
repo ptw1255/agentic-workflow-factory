@@ -15,6 +15,7 @@ import { nodeCatalog } from '../domain/catalog.js';
 import {
   createProjectSchema,
   cloneWorkflowSchema,
+  declarativeImportSchema,
   createConnectionSchema,
   createProposalSchema,
   createTenantSchema,
@@ -25,6 +26,7 @@ import { validateWorkflow } from '../domain/validator.js';
 import { defaultFactoryManifest } from '../factory/manifest.js';
 import { calculateFactoryMetrics } from '../factory/metrics.js';
 import { EventService } from '../observability/event-service.js';
+import { parseProjectYaml, stringifyProjectYaml } from '../declarative/yaml.js';
 import { CompositeTelemetryExporter, OtlpHttpExporter } from '../observability/otlp-exporter.js';
 import { LocalWorkflowExecutor } from '../runtime/executor.js';
 import { JsonStore } from '../storage/json-store.js';
@@ -228,6 +230,46 @@ export async function createApp(
         return reply.status(404).send({ message: errorMessage(error) });
       }
       return cloned;
+    },
+  );
+
+  app.get<{ Params: { projectId: string } }>(
+    '/api/projects/:projectId/declarative.yaml',
+    async (request, reply) => {
+      const scope = scopeFromRequest(request);
+      const payload = await store.read((state) => {
+        const project = state.projects.find((candidate) => candidate.id === request.params.projectId && candidate.tenantId === scope.tenantId);
+        if (project === undefined) return undefined;
+        const workflows = state.workflows.filter((workflow) => workflow.projectId === project.id && workflow.tenantId === scope.tenantId);
+        return stringifyProjectYaml(project, workflows);
+      });
+      if (payload === undefined) return reply.status(404).send({ message: 'Project not found.' });
+      return reply.type('text/yaml').send(payload);
+    },
+  );
+
+  app.post<{ Params: { projectId: string }; Body: unknown }>(
+    '/api/projects/:projectId/declarative',
+    async (request, reply) => {
+      const parsed = declarativeImportSchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(422).send({ message: 'Declarative YAML payload is invalid.', issues: parsed.error.issues });
+      const scope = scopeFromRequest(request);
+      try {
+        const imported = parseProjectYaml(parsed.data.source, { tenantId: scope.tenantId, projectId: request.params.projectId });
+        imported.project.id = request.params.projectId;
+        await store.mutate((state) => {
+          const projectIndex = state.projects.findIndex((project) => project.id === request.params.projectId && project.tenantId === scope.tenantId);
+          if (projectIndex < 0) throw new Error('Project not found.');
+          state.projects[projectIndex] = imported.project;
+          state.workflows = state.workflows.filter((workflow) => !(workflow.projectId === request.params.projectId && workflow.tenantId === scope.tenantId));
+          state.workflowVersions = state.workflowVersions.filter((workflow) => !(workflow.projectId === request.params.projectId && workflow.tenantId === scope.tenantId));
+          state.workflows.push(...imported.workflows);
+          state.workflowVersions.push(...structuredClone(imported.workflows));
+        });
+        return { project: imported.project, workflows: imported.workflows };
+      } catch (error) {
+        return reply.status(422).send({ message: errorMessage(error) });
+      }
     },
   );
 

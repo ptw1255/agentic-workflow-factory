@@ -440,17 +440,23 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
   const [agentDraft, setAgentDraft] = useState('[]');
   const [agentError, setAgentError] = useState<string | null>(null);
   const [hasRun, setHasRun] = useState(() => window.localStorage.getItem(`factory.onboarding.${projectId}.run`) === 'true');
+  const [yamlSource, setYamlSource] = useState('');
+  const [yamlDirty, setYamlDirty] = useState(false);
+  const [studioMode, setStudioMode] = useState<'tree' | 'canvas'>('tree');
 
   const loadStudio = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [catalogResponse, workflowResponse] = await Promise.all([
+      const [catalogResponse, workflowResponse, yamlResponse] = await Promise.all([
         api.catalog(),
         api.workflows(),
+        api.declarativeYaml(projectId),
       ]);
       setCatalog(catalogResponse.items);
       setWorkflows(workflowResponse.items);
+      setYamlSource(yamlResponse);
+      setYamlDirty(false);
       const first = workflowResponse.items[0] ?? null;
       setWorkflow(first);
       if (first !== null) {
@@ -463,7 +469,7 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [projectId]);
 
   useEffect(() => {
     void loadStudio();
@@ -703,6 +709,8 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
     try {
       const saved = await api.saveWorkflow(canvasToWorkflow(workflow, nodes, edges));
       setWorkflow(saved);
+      setYamlSource((await api.declarativeYaml(projectId)).trim());
+      setYamlDirty(false);
       setWorkflows((current) =>
         current.map((item) => (item.id === saved.id ? saved : item)),
       );
@@ -791,6 +799,10 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
           {dirty ? <span className="dirty-indicator">Unsaved</span> : null}
         </div>
         <div className="header-actions">
+          <div className="view-toggle" role="group" aria-label="Studio view">
+            <button className={studioMode === 'tree' ? 'active' : ''} onClick={() => setStudioMode('tree')} type="button"><Icon name="nodes" size={14} /> Tree</button>
+            <button className={studioMode === 'canvas' ? 'active' : ''} onClick={() => setStudioMode('canvas')} type="button"><Icon name="studio" size={14} /> Canvas</button>
+          </div>
           <button className="button ghost" disabled={busyAction !== null} onClick={() => void saveWorkflow()} type="button">
             <Icon name="save" /> {busyAction === 'save' ? 'Saving…' : 'Save'}
           </button>
@@ -826,7 +838,7 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
           <button aria-label="Dismiss message" onClick={() => setNotice(null)} type="button"><Icon name="close" /></button>
         </div>
       ) : null}
-      <div className="studio-workspace">
+      {studioMode === 'canvas' ? <div className="studio-workspace">
         <aside className="node-palette">
           <div className="panel-title">
             <div><span className="eyebrow">Components</span><h2>Node palette</h2></div>
@@ -1025,7 +1037,112 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
             </div>
           ) : null}
         </aside>
-      </div>
+      </div> : <OperationalTree
+        dirty={yamlDirty}
+        onCanvas={() => setStudioMode('canvas')}
+        onSourceChange={(value) => { setYamlSource(value); setYamlDirty(true); }}
+        onSourceImported={(nextWorkflows, source) => {
+          setWorkflows(nextWorkflows);
+          const next = nextWorkflows.find((item) => item.id === workflow.id) ?? nextWorkflows[0] ?? null;
+          setWorkflow(next);
+          if (next !== null) {
+            const canvas = workflowToCanvas(next, catalog);
+            setNodes(canvas.nodes);
+            setEdges(canvas.edges);
+          }
+          setYamlSource(source);
+          setYamlDirty(false);
+          setDirty(false);
+          setNotice({ tone: 'success', text: 'YAML applied and compiled successfully.' });
+        }}
+        projectId={projectId}
+        source={yamlSource}
+        workflow={workflow}
+      />}
+    </div>
+  );
+}
+
+function OperationalTree({
+  workflow,
+  source,
+  onCanvas,
+  projectId,
+  dirty,
+  onSourceChange,
+  onSourceImported,
+}: {
+  workflow: WorkflowDefinition;
+  source: string;
+  onCanvas: () => void;
+  projectId: string;
+  dirty: boolean;
+  onSourceChange: (source: string) => void;
+  onSourceImported: (workflows: WorkflowDefinition[], source: string) => void;
+}) {
+  const agentById = new Map(workflow.agents.map((agent) => [agent.id, agent]));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function applyYaml() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await api.importDeclarativeYaml(projectId, source);
+      onSourceImported(response.workflows, source);
+    } catch (applyError) {
+      setError(errorText(applyError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ide-layout">
+      <aside className="ide-explorer">
+        <div className="ide-explorer-title"><span className="eyebrow">Explorer</span><Icon name="search" size={14} /></div>
+        <div className="ide-project"><Icon name="factory" size={15} /><strong>{workflow.projectId ?? 'project'}</strong></div>
+        <div className="ide-folder"><Icon name="chevron" size={12} /> workflows</div>
+        <button className="ide-file active" type="button"><Icon name="code" size={14} /> project.yaml</button>
+        {workflow.agents.map((agent) => <div className="ide-file muted" key={agent.id}><Icon name="agent" size={14} /> {agent.id}.agent.yaml</div>)}
+        <div className="ide-folder"><Icon name="chevron" size={12} /> runtime</div>
+        <div className="ide-file muted"><Icon name="runs" size={14} /> runs</div>
+        <div className="ide-file muted"><Icon name="operations" size={14} /> telemetry</div>
+        <div className="ide-explorer-footer"><span className="system-dot" /> Git-backed definition</div>
+      </aside>
+      <section className="yaml-panel ide-editor">
+        <div className="ide-tab-bar"><span className="ide-tab active"><Icon name="code" size={13} /> project.yaml <span className="ide-tab-dot" /></span><span className="ide-branch">factory.agentic/v1</span></div>
+        <div className="ide-editor-heading"><div><span className="eyebrow">Declarative source</span><h2>Project definition</h2><p>Author the loop in YAML. Apply compiles it into the runtime model.</p></div><div className="ide-editor-actions"><span className={dirty ? 'ide-dirty' : 'ide-clean'}>{dirty ? 'Unsaved changes' : 'Synced'}</span><button className="button primary" disabled={!dirty || busy} onClick={() => void applyYaml()} type="button"><Icon name="save" size={14} /> {busy ? 'Applying…' : 'Apply YAML'}</button><button className="icon-button" onClick={onCanvas} title="Open canvas compatibility view" type="button"><Icon name="studio" size={15} /></button></div></div>
+        <div className="yaml-editor-wrap"><div className="yaml-line-numbers" aria-hidden="true">{source.split('\n').map((_, index) => <span key={index}>{index + 1}</span>)}</div><textarea aria-label="Project YAML editor" className="yaml-editor" onChange={(event) => onSourceChange(event.target.value)} spellCheck={false} value={source} /></div>
+        {error === null ? <small className="ide-hint">Review the compiled tree on the right, then apply the file when it is ready. Invalid definitions never replace the active runtime.</small> : <div className="ide-error"><Icon name="warning" size={14} /> {error}</div>}
+      </section>
+      <section className="operational-tree-panel ide-tree-panel">
+        <div className="operational-heading"><div><span className="eyebrow">Operational tree</span><h2>{workflow.name}</h2><p>{workflow.description || 'Declarative workflow definition'}</p></div><span className="status-badge status-draft">v{workflow.version}</span></div>
+        <div className="tree-root"><span className="tree-icon"><Icon name="factory" size={15} /></span><div><strong>{workflow.name}</strong><small>{workflow.nodes.length} work units · {workflow.agents.length} agent boxes</small></div></div>
+        <ol className="operational-tree">
+          {workflow.nodes.map((node, index) => {
+            const agentId = node.type === 'agentLoop' && typeof node.config.agentId === 'string' ? node.config.agentId : undefined;
+            const agent = agentId === undefined ? undefined : agentById.get(agentId);
+            return (
+              <li key={node.id}>
+                <span className={`tree-rail ${index === workflow.nodes.length - 1 ? 'last' : ''}`} />
+                <span className={`tree-icon tree-kind-${node.unit?.kind ?? 'deterministic'}`}><Icon name={node.type === 'agentLoop' ? 'agent' : node.type === 'approval' ? 'human' : 'code'} size={14} /></span>
+                <div className="tree-node"><div><strong>{node.label}</strong><span className="tree-kind-label">{node.unit?.kind ?? 'work unit'}</span></div><small>{node.type} · {node.unit?.timeoutMs ?? 0}ms timeout · {node.unit?.retryAttempts ?? 1} retries</small>{agent === undefined ? null : <div className="tree-agent"><Icon name="agent" size={12} /> {agent.name} · {agent.model.model ?? agent.model.routingAlias ?? 'unconfigured'}</div>}</div>
+              </li>
+            );
+          })}
+        </ol>
+        <div className="agent-boxes-heading"><span className="eyebrow">Declared boxes</span><span className="count-pill">{workflow.agents.length}</span></div>
+        <div className="operational-agents">
+          {workflow.agents.map((agent) => (
+            <article className="operational-agent" key={agent.id}>
+              <div className="operational-agent-title"><span className="tree-icon tree-kind-agent"><Icon name="agent" size={14} /></span><div><strong>{agent.name}</strong><small>{agent.id} · v{agent.version}</small></div><span className="tree-kind-label">{agent.model.model ?? agent.model.routingAlias ?? 'unconfigured'}</span></div>
+              <p>{agent.purpose}</p>
+              <div className="agent-facts"><span><strong>Skills</strong>{agent.skills.length > 0 ? agent.skills.join(', ') : 'None declared'}</span><span><strong>Limits</strong>{agent.limits.maxIterations} iterations · ${agent.limits.maxCostUsd.toFixed(2)} · {Math.round(agent.limits.maxDurationMs / 1000)}s</span><span><strong>Network</strong>{agent.boundaries.network}</span></div>
+            </article>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

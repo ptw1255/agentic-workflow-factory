@@ -1,0 +1,89 @@
+import { describe, expect, it } from 'vitest';
+
+import { parseProjectYaml, stringifyProjectYaml } from './yaml.js';
+
+const source = `
+apiVersion: factory.agentic/v1
+kind: Project
+metadata:
+  id: project-test
+  name: Test loop
+  description: A declarative test loop.
+agents:
+  - id: reviewer
+    name: Reviewer
+    purpose: Review the supplied change.
+    instructions: Return a concise risk assessment.
+    skills: [code-review]
+    tools: []
+    model:
+      provider: openai
+      model: gpt-test
+    boundaries:
+      allowedConnections: []
+      allowedRepositories: []
+      protectedPaths: []
+      network: deny-by-default
+      dataClasses: [internal]
+    limits:
+      maxIterations: 2
+      maxCostUsd: 0.1
+      maxDurationMs: 30000
+    termination:
+      successConditions: [Review is complete.]
+      failureConditions: []
+      escalationConditions: []
+    approval:
+      beforeSideEffects: false
+      beforeTools: []
+    observability:
+      captureInputs: false
+      captureOutputs: false
+      redactedFields: [prompt, output]
+workflows:
+  - id: workflow-test
+    name: Test workflow
+    trigger: manual
+    steps:
+      - id: prepare
+        name: Prepare
+        kind: deterministic
+        operation: trim
+      - id: review
+        name: Review
+        kind: agent
+        agent: reviewer
+`;
+
+describe('declarative project YAML', () => {
+  it('parses a project into validated runtime definitions', () => {
+    const parsed = parseProjectYaml(source, { tenantId: 'tenant-test' });
+    expect(parsed.project).toMatchObject({ id: 'project-test', tenantId: 'tenant-test', name: 'Test loop' });
+    expect(parsed.workflows).toHaveLength(1);
+    expect(parsed.workflows[0]).toMatchObject({
+      id: 'workflow-test',
+      projectId: 'project-test',
+      trigger: { type: 'manualTrigger' },
+    });
+    expect(parsed.workflows[0]?.nodes.map((node) => node.type)).toEqual([
+      'manualTrigger',
+      'code',
+      'agentLoop',
+    ]);
+    expect(parsed.workflows[0]?.agents[0]?.model.model).toBe('gpt-test');
+  });
+
+  it('round-trips runtime definitions back to source YAML', () => {
+    const parsed = parseProjectYaml(source, { tenantId: 'tenant-test' });
+    const rendered = stringifyProjectYaml(parsed.project, parsed.workflows);
+    expect(rendered).toContain('apiVersion: factory.agentic/v1');
+    expect(rendered).toContain('kind: Project');
+    expect(rendered).toContain('name: Test workflow');
+    expect(rendered).toContain('type: agentLoop');
+  });
+
+  it('rejects unsupported document headers and node types', () => {
+    expect(() => parseProjectYaml(source.replace('kind: Project', 'kind: Workflow'), { tenantId: 'tenant-test' })).toThrow(/kind/);
+    expect(() => parseProjectYaml(source.replace('kind: deterministic', 'type: unsupported'), { tenantId: 'tenant-test' })).toThrow(/Unknown YAML step type/);
+  });
+});

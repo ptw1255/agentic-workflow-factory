@@ -7,6 +7,7 @@
     "build": "vite build",
     "check": "npm run typecheck && npm test && npm run build",
     "demo": "tsx scripts/demo.ts",
+    "factory": "tsx scripts/factory.ts",
     "dev": "node scripts/dev.mjs",
     "server": "tsx src/server/main.ts",
     "test": "vitest run",
@@ -25,6 +26,7 @@
     "pg": "^8.16.3",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "yaml": "^2.8.1",
     "zod": "4.4.3"
   },
   "devDependencies": {
