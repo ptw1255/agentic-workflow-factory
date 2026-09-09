@@ -1,23 +1,29 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { parseProjectYaml } from '../src/declarative/yaml.js';
+import { compileResourceFiles } from '../src/declarative/resources.js';
 import { EventService } from '../src/observability/event-service.js';
 import { LocalWorkflowExecutor } from '../src/runtime/executor.js';
 import { JsonStore } from '../src/storage/json-store.js';
 import { createSeedState } from '../src/domain/seed.js';
 
 function usage(): never {
-  console.error('Usage: npm run factory -- <validate|plan|tree|run> <project.yaml> [workflow-id]');
+  console.error('Usage: npm run factory -- <validate|plan|tree|run> <project.yaml|resource-directory> [workflow-id]');
   process.exit(1);
 }
 
 const [command, filePath, workflowId] = process.argv.slice(2);
 if (command === undefined || filePath === undefined) usage();
 
-const source = await readFile(filePath, 'utf8');
-const parsed = parseProjectYaml(source, { tenantId: 'tenant-local' });
+const inputStat = await stat(filePath);
+const parsed = await (async () => {
+  if (!inputStat.isDirectory()) return parseProjectYaml(await readFile(filePath, 'utf8'), { tenantId: 'tenant-local' });
+  const entries = (await readdir(filePath, { recursive: true })).filter((entry) => /\.(yaml|yml|json)$/i.test(entry));
+  const resources = await Promise.all(entries.map(async (entry) => ({ path: entry, source: await readFile(path.join(filePath, entry), 'utf8') })));
+  return compileResourceFiles(resources, { tenantId: 'tenant-local' });
+})();
 
 function printTree(): void {
   console.log(`${parsed.project.name} (${parsed.project.id})`);
