@@ -44,4 +44,21 @@ describe('EventService retention', () => {
       'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     ]);
   });
+
+  it('does not let an exporter failure interrupt event persistence', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'factory-events-'));
+    const store = new JsonStore(path.join(directory, 'state.json'));
+    const exporter = {
+      export: async () => {
+        throw new Error('collector unavailable');
+      },
+    };
+    const service = new EventService(store, { exporter });
+
+    await expect(service.emit('run-1', 'run.started', 'started')).resolves.toEqual(
+      expect.objectContaining({ type: 'run.started' }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(await service.list('run-1')).toHaveLength(1);
+  });
 });
