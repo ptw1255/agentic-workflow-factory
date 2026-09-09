@@ -14,6 +14,10 @@ describe('platform API', () => {
     app = await createApp({
       dataFile: path.join(directory, 'state.json'),
       serveStatic: false,
+      secretBroker: {
+        put: async () => undefined,
+        get: async () => 'test-secret',
+      },
     });
   });
 
@@ -62,5 +66,61 @@ describe('platform API', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).not.toHaveProperty('secret');
+  });
+
+  it('preserves immutable workflow versions after a save', async () => {
+    const currentResponse = await app.inject({
+      method: 'GET',
+      url: '/api/workflows/workflow-agent-intake',
+    });
+    const current = currentResponse.json<Record<string, unknown>>();
+    const updated = { ...current, name: 'Updated request intake' };
+
+    const saveResponse = await app.inject({
+      method: 'PUT',
+      url: '/api/workflows/workflow-agent-intake',
+      payload: updated,
+    });
+    expect(saveResponse.statusCode).toBe(200);
+    expect(saveResponse.json()).toMatchObject({ version: 2, name: 'Updated request intake' });
+
+    const versionsResponse = await app.inject({
+      method: 'GET',
+      url: '/api/workflows/workflow-agent-intake/versions',
+    });
+    expect(versionsResponse.statusCode).toBe(200);
+    expect(versionsResponse.json<{ items: Array<{ version: number }> }>().items.map(
+      (version) => version.version,
+    )).toEqual([2, 1]);
+
+    const originalResponse = await app.inject({
+      method: 'GET',
+      url: '/api/workflows/workflow-agent-intake/versions/1',
+    });
+    expect(originalResponse.json()).toMatchObject({
+      version: 1,
+      name: 'Agent-led request intake',
+    });
+  });
+
+  it('exposes telemetry through log, trace, and metric signals', async () => {
+    const start = await app.inject({
+      method: 'POST',
+      url: '/api/workflows/workflow-agent-intake/runs',
+      payload: {},
+    });
+    const runId = start.json<{ id: string }>().id;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const telemetry = await app.inject({
+      method: 'GET',
+      url: `/api/telemetry?runId=${runId}`,
+    });
+    const payload = telemetry.json<{ items: Array<{ signal: string }>; resource: Record<string, string> }>();
+    expect(telemetry.statusCode).toBe(200);
+    expect(payload.resource['telemetry.sdk.name']).toBe('opentelemetry');
+    expect(new Set(payload.items.map((item) => item.signal))).toEqual(
+      new Set(['log', 'trace', 'metric']),
+    );
   });
 });

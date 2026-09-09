@@ -39,6 +39,10 @@ export const api = {
   workflows: () => request<ItemsResponse<WorkflowDefinition>>('/api/workflows'),
   workflow: (id: string) =>
     request<WorkflowDefinition>(`/api/workflows/${encodeURIComponent(id)}`),
+  workflowVersions: (id: string) =>
+    request<ItemsResponse<WorkflowDefinition>>(
+      `/api/workflows/${encodeURIComponent(id)}/versions`,
+    ),
   saveWorkflow: (workflow: WorkflowDefinition) =>
     request<WorkflowDefinition>(`/api/workflows/${encodeURIComponent(workflow.id)}`, {
       method: 'PUT',
@@ -68,12 +72,17 @@ export const api = {
     }),
   events: (runId: string) =>
     request<ItemsResponse<RunEvent>>(`/api/events?runId=${encodeURIComponent(runId)}`),
+  telemetry: (runId: string, signal?: 'log' | 'trace' | 'metric') =>
+    request<ItemsResponse<RunEvent> & { resource: Record<string, string> }>(
+      `/api/telemetry?runId=${encodeURIComponent(runId)}${signal === undefined ? '' : `&signal=${signal}`}`,
+    ),
   connections: () => request<ItemsResponse<ConnectionRecord>>('/api/connections'),
   createConnection: (input: {
     name: string;
     connector: string;
     environment: string;
     scopes: string[];
+    secret?: string;
   }) =>
     request<ConnectionRecord>('/api/connections', {
       method: 'POST',

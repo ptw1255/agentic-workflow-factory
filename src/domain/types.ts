@@ -20,6 +20,51 @@ export interface WorkflowNode {
   label: string;
   position: Position;
   config: Record<string, unknown>;
+  unit?: WorkUnitDefinition;
+}
+
+export type AgentSpanKind = 'agent' | 'llm' | 'tool' | 'chain' | 'evaluator';
+export type WorkUnitKind =
+  | 'deterministic'
+  | 'agent'
+  | 'human'
+  | 'connector'
+  | 'consumer'
+  | 'evaluator';
+
+export interface WorkUnitDefinition {
+  kind: WorkUnitKind;
+  version: number;
+  inputSchema: string;
+  outputSchema: string;
+  timeoutMs: number;
+  retryAttempts: number;
+  idempotencyKey?: string;
+}
+
+/** A versioned, policy-bound agent "box" owned by its workflow definition. */
+export interface AgentDefinition {
+  id: string;
+  version: number;
+  name: string;
+  purpose: string;
+  instructions: string;
+  skills: string[];
+  tools: string[];
+  model: { provider?: string; model?: string; routingAlias?: string };
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  boundaries: {
+    allowedConnections: string[];
+    allowedRepositories: string[];
+    protectedPaths: string[];
+    network: 'deny-by-default' | 'allow-listed';
+    dataClasses: string[];
+  };
+  limits: { maxIterations: number; maxCostUsd: number; maxDurationMs: number; maxTokens?: number };
+  termination: { successConditions: string[]; failureConditions: string[]; escalationConditions: string[] };
+  approval: { beforeSideEffects: boolean; beforeTools: string[] };
+  observability: { captureInputs: boolean; captureOutputs: boolean; redactedFields: string[] };
 }
 
 export interface WorkflowEdge {
@@ -40,6 +85,7 @@ export interface WorkflowDefinition {
   trigger: {
     type: string;
   };
+  agents: AgentDefinition[];
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   createdAt: string;
@@ -63,6 +109,7 @@ export interface RunRecord {
   workflowId: string;
   workflowName: string;
   workflowVersion: number;
+  traceId: string;
   status: RunStatus;
   startedAt: string;
   completedAt?: string;
@@ -74,6 +121,7 @@ export interface RunRecord {
   completedNodeIds: string[];
   activatedNodeIds: string[];
   approvedNodeIds: string[];
+  unitOutputs: Record<string, unknown>;
 }
 
 export interface RunEvent {
@@ -83,6 +131,13 @@ export interface RunEvent {
   type: string;
   timestamp: string;
   message: string;
+  signal: 'log' | 'trace' | 'metric';
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  spanKind?: AgentSpanKind;
+  severityText?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+  attributes?: Record<string, string | number | boolean>;
   data?: Record<string, unknown>;
 }
 
@@ -95,6 +150,8 @@ export interface ConnectionRecord {
   scopes: string[];
   lastCheckedAt: string;
   usageCount: number;
+  secretRef?: string;
+  secretConfigured: boolean;
 }
 
 export interface AgentProposal {
@@ -134,6 +191,7 @@ export interface FactoryMetrics {
 
 export interface PlatformState {
   workflows: WorkflowDefinition[];
+  workflowVersions: WorkflowDefinition[];
   runs: RunRecord[];
   events: RunEvent[];
   connections: ConnectionRecord[];

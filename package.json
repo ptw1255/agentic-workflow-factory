@@ -22,12 +22,14 @@
     "@temporalio/workflow": "1.22.0",
     "@xyflow/react": "12.11.3",
     "fastify": "5.12.1",
+    "pg": "^8.16.3",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "26.2.0",
+    "@types/pg": "^8.15.5",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "6.1.0",

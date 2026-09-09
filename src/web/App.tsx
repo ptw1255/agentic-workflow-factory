@@ -25,7 +25,9 @@ import {
 import { api } from './api';
 import { Icon, type IconName } from './icons';
 import { WorkflowNodeCard, type CanvasNode } from './WorkflowNodeCard';
+import { defaultWorkUnit } from '../domain/catalog';
 import type {
+  AgentDefinition,
   AgentProposal,
   ConnectionRecord,
   FactoryMetrics,
@@ -253,6 +255,7 @@ function workflowToCanvas(
           category: catalogItem?.category ?? 'Operations',
           description: catalogItem?.description ?? 'Workflow operation',
           config: node.config,
+          unit: node.unit,
         },
       };
     }),
@@ -277,6 +280,7 @@ function canvasToWorkflow(
     label: node.data.label,
     position: node.position,
     config: node.data.config,
+    unit: node.data.unit,
   }));
   const workflowEdges: WorkflowEdge[] = edges.map((edge) => ({
     id: edge.id,
@@ -315,7 +319,11 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [configDraft, setConfigDraft] = useState('{}');
   const [configError, setConfigError] = useState<string | null>(null);
+  const [unitDraft, setUnitDraft] = useState('{}');
+  const [unitError, setUnitError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [agentDraft, setAgentDraft] = useState('[]');
+  const [agentError, setAgentError] = useState<string | null>(null);
 
   const loadStudio = useCallback(async () => {
     setLoading(true);
@@ -358,6 +366,8 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
     if (selectedNode !== null) {
       setConfigDraft(JSON.stringify(selectedNode.data.config, null, 2));
       setConfigError(null);
+      setUnitDraft(JSON.stringify(selectedNode.data.unit ?? {}, null, 2));
+      setUnitError(null);
     }
   }, [selectedNode?.id]);
 
@@ -374,6 +384,29 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
     setValidation(null);
     setNotice(null);
   }, []);
+
+  useEffect(() => {
+    if (workflow !== null) {
+      setAgentDraft(JSON.stringify(workflow.agents, null, 2));
+      setAgentError(null);
+    }
+  }, [workflow?.id, workflow?.version]);
+
+  function updateAgentDefinitions(value: string) {
+    setAgentDraft(value);
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (!Array.isArray(parsed)) {
+        setAgentError('Agent definitions must be a JSON array.');
+        return;
+      }
+      setAgentError(null);
+      setWorkflow((current) => current === null ? current : { ...current, agents: parsed as AgentDefinition[] });
+      markChanged();
+    } catch {
+      setAgentError('Enter valid JSON before saving.');
+    }
+  }
 
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
@@ -436,6 +469,8 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
   }
 
   function addNode(item: NodeCatalogItem) {
+    if (workflow === null) return;
+    const activeWorkflow = workflow;
     const sameTypeCount = nodes.filter((node) => node.data.nodeType === item.type).length;
     const id = `${item.type}-${Date.now()}`;
     const next: CanvasNode = {
@@ -450,7 +485,13 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
         nodeType: item.type,
         category: item.category,
         description: item.description,
-        config: structuredClone(item.defaultConfig),
+        config: {
+          ...structuredClone(item.defaultConfig),
+          ...(item.type === 'agentLoop' && activeWorkflow.agents[0] !== undefined
+            ? { agentId: activeWorkflow.agents[0].id, maxIterations: activeWorkflow.agents[0].limits.maxIterations }
+            : {}),
+        },
+        unit: defaultWorkUnit(item.type),
       },
       selected: true,
     };
@@ -498,6 +539,24 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
     }
   }
 
+  function updateUnit(value: string) {
+    setUnitDraft(value);
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+        setUnitError('Work unit must be a JSON object.');
+        return;
+      }
+      setUnitError(null);
+      setNodes((current) => current.map((node) =>
+        node.id === selectedNodeId ? { ...node, data: { ...node.data, unit: parsed as CanvasNode['data']['unit'] } } : node,
+      ));
+      markChanged();
+    } catch {
+      setUnitError('Enter valid JSON before saving.');
+    }
+  }
+
   function updateEdgeCondition(condition: string) {
     setEdges((current) =>
       current.map((edge) => (edge.id === selectedEdgeId ? { ...edge, label: condition } : edge)),
@@ -522,7 +581,7 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
   }
 
   async function saveWorkflow(): Promise<WorkflowDefinition | null> {
-    if (workflow === null || configError !== null) return null;
+    if (workflow === null || configError !== null || unitError !== null || agentError !== null) return null;
     setBusyAction('save');
     setNotice(null);
     try {
@@ -687,6 +746,19 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
             ))}
             {filteredCatalog.length === 0 ? <p className="inline-empty">No nodes match “{paletteSearch}”.</p> : null}
           </div>
+          <details className="agent-box-panel" open>
+            <summary><span>Agent boxes</span><span className="count-pill">{workflow.agents.length}</span></summary>
+            <p>Define the versioned purpose, skills, tools, limits, and boundaries used by agent-loop nodes.</p>
+            <textarea
+              aria-label="Agent definitions"
+              className={agentError === null ? '' : 'invalid'}
+              onChange={(event) => updateAgentDefinitions(event.target.value)}
+              rows={9}
+              spellCheck={false}
+              value={agentDraft}
+            />
+            <small className={agentError === null ? '' : 'field-error'}>{agentError ?? 'JSON array · validated when saved'}</small>
+          </details>
         </aside>
         <section className="flow-canvas" aria-label="Workflow canvas">
           <div className="canvas-meta">
@@ -762,6 +834,18 @@ function StudioView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
                   value={configDraft}
                 />
                 {configError === null ? <small>JSON object · changes apply as you type</small> : <small className="field-error" id="config-error">{configError}</small>}
+              </label>
+              <label className="form-field">
+                <span>Work unit contract</span>
+                <textarea
+                  aria-describedby={unitError === null ? undefined : 'unit-error'}
+                  className={unitError === null ? '' : 'invalid'}
+                  onChange={(event) => updateUnit(event.target.value)}
+                  rows={7}
+                  spellCheck={false}
+                  value={unitDraft}
+                />
+                {unitError === null ? <small>Versioned input/output, timeout, retry, and idempotency policy.</small> : <small className="field-error" id="unit-error">{unitError}</small>}
               </label>
               <button className="button danger wide" onClick={removeSelection} type="button">Remove node</button>
             </div>
@@ -1007,7 +1091,7 @@ function ConnectionsView() {
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', connector: 'HTTP', environment: 'development', scopes: '' });
+  const [form, setForm] = useState({ name: '', connector: 'HTTP', environment: 'development', scopes: '', secret: '' });
 
   const loadConnections = useCallback(async () => {
     setLoading(true);
@@ -1033,9 +1117,10 @@ function ConnectionsView() {
         connector: form.connector,
         environment: form.environment.trim(),
         scopes: form.scopes.split(',').map((scope) => scope.trim()).filter(Boolean),
+        ...(form.secret.length === 0 ? {} : { secret: form.secret }),
       });
       setConnections((current) => [created, ...current]);
-      setForm({ name: '', connector: 'HTTP', environment: 'development', scopes: '' });
+      setForm({ name: '', connector: 'HTTP', environment: 'development', scopes: '', secret: '' });
       setShowForm(false);
     } catch (submitError) {
       setFormError(errorText(submitError));
@@ -1051,14 +1136,15 @@ function ConnectionsView() {
       <AppHeader eyebrow="Integration registry" title="Connections">
         <button className="button primary" onClick={() => setShowForm((current) => !current)} type="button"><Icon name={showForm ? 'close' : 'plus'} /> {showForm ? 'Close' : 'New connection'}</button>
       </AppHeader>
-      <p className="page-intro">Manage integration metadata and access scopes. Credentials are configured securely outside this dashboard.</p>
+      <p className="page-intro">Manage integration metadata and access scopes. Credentials are encrypted and brokered by local Vault.</p>
       {showForm ? (
         <form className="connection-form" onSubmit={(event) => void submitConnection(event)}>
-          <div className="form-intro"><span className="palette-icon tone-connections"><Icon name="connections" /></span><div><h2>Register connection</h2><p>Describe where this connector is used. No secrets or credentials are collected.</p></div></div>
+          <div className="form-intro"><span className="palette-icon tone-connections"><Icon name="connections" /></span><div><h2>Register connection</h2><p>Credentials are written to Vault and never stored in workflow or PostgreSQL state.</p></div></div>
           <label className="form-field"><span>Name</span><input autoFocus onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="e.g. Production CRM" required value={form.name} /></label>
           <label className="form-field"><span>Connector</span><select onChange={(event) => setForm({ ...form, connector: event.target.value })} value={form.connector}><option>HTTP</option><option>GitHub</option><option>Slack</option><option>PostgreSQL</option><option>Azure OpenAI</option><option>Custom</option></select></label>
           <label className="form-field"><span>Environment</span><input onChange={(event) => setForm({ ...form, environment: event.target.value })} placeholder="development" required value={form.environment} /></label>
           <label className="form-field"><span>Scopes</span><input onChange={(event) => setForm({ ...form, scopes: event.target.value })} placeholder="records:read, records:write" value={form.scopes} /><small>Comma-separated metadata only</small></label>
+          <label className="form-field"><span>API key <em>(optional)</em></span><input autoComplete="off" onChange={(event) => setForm({ ...form, secret: event.target.value })} placeholder="Stored in Vault" type="password" value={form.secret} /><small>Write-only field. The key is not returned or logged.</small></label>
           {formError === null ? null : <p className="form-error" role="alert">{formError}</p>}
           <div className="form-actions"><button className="button ghost" onClick={() => setShowForm(false)} type="button">Cancel</button><button className="button primary" disabled={saving} type="submit">{saving ? 'Registering…' : 'Register connection'}</button></div>
         </form>

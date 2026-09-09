@@ -20,6 +20,41 @@ export interface WorkflowNode {
   label: string;
   position: Position;
   config: Record<string, unknown>;
+  unit?: WorkUnitDefinition;
+}
+
+export interface WorkUnitDefinition {
+  kind: 'deterministic' | 'agent' | 'human' | 'connector' | 'consumer' | 'evaluator';
+  version: number;
+  inputSchema: string;
+  outputSchema: string;
+  timeoutMs: number;
+  retryAttempts: number;
+  idempotencyKey?: string;
+}
+
+export interface AgentDefinition {
+  id: string;
+  version: number;
+  name: string;
+  purpose: string;
+  instructions: string;
+  skills: string[];
+  tools: string[];
+  model: { provider?: string; model?: string; routingAlias?: string };
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  boundaries: {
+    allowedConnections: string[];
+    allowedRepositories: string[];
+    protectedPaths: string[];
+    network: 'deny-by-default' | 'allow-listed';
+    dataClasses: string[];
+  };
+  limits: { maxIterations: number; maxCostUsd: number; maxDurationMs: number; maxTokens?: number };
+  termination: { successConditions: string[]; failureConditions: string[]; escalationConditions: string[] };
+  approval: { beforeSideEffects: boolean; beforeTools: string[] };
+  observability: { captureInputs: boolean; captureOutputs: boolean; redactedFields: string[] };
 }
 
 export interface WorkflowEdge {
@@ -38,6 +73,7 @@ export interface WorkflowDefinition {
   version: number;
   status: WorkflowStatus;
   trigger: { type: string };
+  agents: AgentDefinition[];
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   createdAt: string;
@@ -61,6 +97,7 @@ export interface RunRecord {
   workflowId: string;
   workflowName: string;
   workflowVersion: number;
+  traceId: string;
   status: RunStatus;
   startedAt: string;
   completedAt?: string;
@@ -68,6 +105,7 @@ export interface RunRecord {
   costUsd: number;
   humanTouchpoints: number;
   error?: string;
+  unitOutputs?: Record<string, unknown>;
 }
 
 export interface RunEvent {
@@ -77,6 +115,13 @@ export interface RunEvent {
   type: string;
   timestamp: string;
   message: string;
+  signal: 'log' | 'trace' | 'metric';
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  spanKind?: 'agent' | 'llm' | 'tool' | 'chain' | 'evaluator';
+  severityText?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+  attributes?: Record<string, string | number | boolean>;
   data?: Record<string, unknown>;
 }
 
@@ -89,6 +134,8 @@ export interface ConnectionRecord {
   scopes: string[];
   lastCheckedAt: string;
   usageCount: number;
+  secretRef?: string;
+  secretConfigured: boolean;
 }
 
 export interface AgentProposal {
@@ -129,5 +176,5 @@ export interface WorkflowNodeData extends Record<string, unknown> {
   category: string;
   description: string;
   config: Record<string, unknown>;
+  unit?: WorkUnitDefinition;
 }
-

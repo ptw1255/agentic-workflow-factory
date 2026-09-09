@@ -5,6 +5,7 @@ import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { seedWorkflow } from '../domain/seed.js';
+import { defaultWorkUnit } from '../domain/catalog.js';
 import { EventService } from '../observability/event-service.js';
 import { JsonStore } from '../storage/json-store.js';
 import { LocalWorkflowExecutor } from './executor.js';
@@ -55,6 +56,12 @@ describe('LocalWorkflowExecutor', () => {
     expect(
       recorded.filter((event) => event.type === 'agent.iteration'),
     ).toHaveLength(3);
+    expect(recorded.every((event) => event.traceId === run.traceId)).toBe(true);
+    expect(recorded.some((event) => event.signal === 'trace' && event.spanKind === 'agent')).toBe(true);
+    expect(recorded.some((event) => event.signal === 'metric')).toBe(true);
+    expect(recorded.find((event) => event.type === 'agent.iteration')?.attributes).toEqual(
+      expect.objectContaining({ 'openinference.span.kind': 'AGENT', 'agent.id': 'request-assessor' }),
+    );
   });
 
   it('waits for and resumes from a human approval', async () => {
@@ -69,6 +76,7 @@ describe('LocalWorkflowExecutor', () => {
       label: 'Approve output',
       position: { x: 1_020, y: 180 },
       config: {},
+      unit: defaultWorkUnit('approval'),
     });
     const incoming = workflow.edges.find((edge) => edge.target === 'output');
     if (incoming === undefined) {
@@ -103,6 +111,25 @@ describe('LocalWorkflowExecutor', () => {
     expect(completed?.completedNodeIds).toContain('approval');
   });
 
+  it('runs deterministic code units before downstream work', async () => {
+    const workflow = structuredClone(seedWorkflow);
+    const prepare = workflow.nodes.find((node) => node.id === 'prepare');
+    if (prepare === undefined) throw new Error('Seed prepare node is missing.');
+    prepare.type = 'code';
+    prepare.config = { operation: 'uppercase', value: 'validated request' };
+
+    const run = await executor.start(workflow);
+    await waitFor(async () =>
+      (await store.read((state) => state.runs.find((candidate) => candidate.id === run.id)))?.status === 'succeeded',
+    );
+
+    const recorded = await events.list(run.id);
+    expect(recorded.some((event) => event.type === 'unit.completed' && event.nodeId === 'prepare')).toBe(true);
+    expect(recorded.find((event) => event.type === 'node.completed' && event.nodeId === 'prepare')?.data?.result).toBe('VALIDATED REQUEST');
+    const output = await store.read((state) => state.runs.find((candidate) => candidate.id === run.id)?.unitOutputs.prepare);
+    expect(output).toBe('VALIDATED REQUEST');
+  });
+
   it('does not execute nodes unreachable from the declared trigger', async () => {
     const workflow = structuredClone(seedWorkflow);
     workflow.nodes.push({
@@ -111,6 +138,7 @@ describe('LocalWorkflowExecutor', () => {
       label: 'Must not execute',
       position: { x: 0, y: 0 },
       config: { message: 'unreachable' },
+      unit: defaultWorkUnit('notification'),
     });
 
     const run = await executor.start(workflow);
@@ -136,6 +164,7 @@ describe('LocalWorkflowExecutor', () => {
     agent.type = 'wait';
     agent.label = 'Long wait';
     agent.config = { durationMs: 1_000 };
+    agent.unit = defaultWorkUnit('wait');
 
     const run = await executor.start(workflow);
     await waitFor(async () =>
@@ -164,6 +193,7 @@ describe('LocalWorkflowExecutor', () => {
         workflowId: seedWorkflow.id,
         workflowName: seedWorkflow.name,
         workflowVersion: seedWorkflow.version,
+        traceId: '0123456789abcdef0123456789abcdef',
         status: 'running',
         startedAt: new Date().toISOString(),
         costUsd: 0,
@@ -172,6 +202,7 @@ describe('LocalWorkflowExecutor', () => {
         completedNodeIds: [],
         activatedNodeIds: ['trigger'],
         approvedNodeIds: [],
+        unitOutputs: {},
       });
     });
 

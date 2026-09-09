@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
-import { nodeCatalog } from '../domain/catalog.js';
+import { defaultWorkUnit, nodeCatalog } from '../domain/catalog.js';
 import type {
   AgentProposal,
   WorkflowDefinition,
   WorkflowNode,
 } from '../domain/types.js';
 import { validateWorkflow } from '../domain/validator.js';
-import type { JsonStore } from '../storage/json-store.js';
+import type { PlatformStore } from '../storage/store.js';
 
 interface PlannedNode {
   type: string;
@@ -55,6 +55,7 @@ function makeNode(type: string, index: number): WorkflowNode {
     label: catalogItem.label,
     position: { x: 60 + index * 260, y: 180 },
     config: structuredClone(catalogItem.defaultConfig),
+    unit: defaultWorkUnit(type),
   };
 }
 
@@ -93,7 +94,7 @@ function selectPlan(goal: string): PlannedNode[] {
 }
 
 export class ProposalService {
-  public constructor(private readonly store: JsonStore) {}
+  public constructor(private readonly store: PlatformStore) {}
 
   public async create(
     workflow: WorkflowDefinition,
@@ -102,6 +103,16 @@ export class ProposalService {
     const selected = selectPlan(goal);
     const now = new Date().toISOString();
     const nodes = selected.map((item, index) => makeNode(item.type, index));
+    const agentDefinition = workflow.agents[0];
+    for (const node of nodes.filter((candidate) => candidate.type === 'agentLoop')) {
+      if (agentDefinition !== undefined) {
+        node.config.agentId = agentDefinition.id;
+        node.config.maxIterations = Math.min(
+          Number(node.config.maxIterations ?? 1),
+          agentDefinition.limits.maxIterations,
+        );
+      }
+    }
     const proposed: WorkflowDefinition = {
       ...structuredClone(workflow),
       id: workflow.id,

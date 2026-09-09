@@ -1,12 +1,27 @@
 # Agentic Workflow Factory
 
-A working foundation for an n8n-style, agent-led workflow product. It combines a
-React Flow authoring dashboard, typed workflow contracts, durable local preview
-execution, Temporal workflow definitions, correlated observability, managed
-connection metadata, bounded agent proposals, and factory metrics.
+Agentic Workflow Factory is a visual, API-first runtime for composing deterministic
+code, bounded agents, human approvals, connectors, evaluators, and consumers into
+durable workflows. Each node is a versioned work unit with an explicit contract;
+each agent is a policy-bound box with declared purpose, skills, tools, budgets,
+boundaries, approvals, and telemetry rules.
+
+The product is designed for software and operations teams that want agents to do
+useful work without turning the system into an opaque autonomous process. A typical
+flow can validate an issue, run deterministic preparation code, ask an agent to plan
+or implement a change, execute tests, route to human review, and publish evidence.
 
 The implementation lives under [`src/`](src/). The product and factory roadmaps
 remain at the repository root and under [`FACTORY/`](FACTORY/).
+
+## Status
+
+The repository is an actively developed MVP. The current release includes the visual
+Studio, versioned workflows and agent boxes, a local durable executor, Temporal
+workflow definitions, PostgreSQL persistence, Vault-backed local secrets, standardized
+OpenTelemetry/OpenInference-style telemetry, bounded proposals, and factory metrics.
+The model-provider and repository-execution adapters are intentionally explicit next
+steps rather than hidden capabilities.
 
 ## Run locally
 
@@ -18,8 +33,8 @@ npm run dev
 ```
 
 Open <http://localhost:5173>. Vite proxies `/api` requests to the Fastify server on
-port 3100. Runtime state is stored in `.data/state.json`; credentials are never
-accepted or stored by the connection API.
+port 3100. Without `DATABASE_URL`, runtime state is stored in `.data/state.json`.
+Without Vault configuration, credential writes are rejected rather than persisted.
 
 Useful commands:
 
@@ -31,12 +46,48 @@ npm run demo
 npm run server
 ```
 
+## Run with Docker Desktop
+
+Docker Desktop can run the app and PostgreSQL together:
+
+```bash
+docker compose up --build
+```
+
+Open <http://localhost:3100>. The app persists its control-plane state in PostgreSQL;
+the `postgres_data` volume keeps it across restarts. The `DATABASE_URL` environment
+variable selects the PostgreSQL adapter. If it is omitted, the server falls back to
+the local JSON store at `.data/state.json`.
+
+Compose also starts a local Vault development server on port `8200`. Connection API
+keys are written to Vault and represented in PostgreSQL only by an opaque reference.
+The Compose Vault token is intentionally `dev-only-token`; this setup is for local
+development and must not be used with production credentials.
+
+PostgreSQL stores workflow and run control-plane state in `platform_state` and keeps
+runtime logs, traces, and metrics in the indexed `observability_events` table. Legacy
+JSON state events are moved into that table automatically on first startup.
+
 `npm run check` runs type checking, tests, and the production web build.
+
+## Product workflow
+
+```text
+Define work units → validate contracts → simulate → version → run durably
+       ↓                   ↓                 ↓          ↓
+ agent boxes          deterministic code   approvals   correlated evidence
+```
+
+Work units exchange persisted outputs and schema metadata. Deterministic units are
+appropriate for normalization, validation, transforms, and tests; agent units are
+bounded by an agent box and may only use declared tools and connections. Agents
+propose changes, while policy and human approval control promotion.
 
 ## Product surfaces
 
 - **Studio:** edit a typed workflow on a React Flow canvas, configure nodes, validate,
-  save immutable versions, and launch runs.
+  define policy-bound agent boxes, save immutable versions, retrieve version history
+  through the API, and launch runs.
 - **Runs:** inspect status, cost, human touchpoints, node events, agent iterations,
   failures, and approval waits.
 - **Connections:** manage non-secret connector metadata, environment bindings, scopes,
@@ -46,6 +97,19 @@ npm run server
   credentials; its service boundary can be replaced with a model-backed planner.
 - **Factory:** view throughput, success, cost, automation, human burden, and
   stage-level performance.
+
+Agent-loop nodes must reference an agent box declared in the workflow definition.
+Each box versions its purpose, instructions, skills, tools, model route, input/output
+schemas, connection and repository boundaries, budgets, termination rules, approval
+gates, and telemetry redaction policy. Runtime events use a shared OpenTelemetry-style
+envelope (logs, traces, and metrics) with OpenInference attributes for agent spans;
+prompt and output capture is opt-in per agent.
+
+Every node is also a versioned work unit with declared input/output schema names,
+timeouts, retry count, and idempotency metadata. Deterministic code units use a
+small allow-listed operation set (`uppercase`, `lowercase`, `trim`, and JSON
+parse/stringify) and persist their outputs for downstream units; arbitrary code
+execution remains a separate sandboxed integration boundary.
 
 ## Architecture
 
@@ -58,24 +122,24 @@ src/
   observability/   # Correlated run event service
   runtime/         # Persistent local preview executor and approvals
   server/          # API-first Fastify control plane
-  storage/         # Atomic JSON development persistence
+  storage/         # JSON development and PostgreSQL control-plane persistence
   temporal/        # Durable Temporal workflow and activity worker
   web/             # React dashboard and workflow studio
 ```
 
 The local executor makes development self-contained and explicitly reports itself as
-`local-durable-preview`. It checkpoints each node to persistent state, supports
-bounded agent loops and human approval/resume, and records correlated events. For a
-Temporal deployment, run a Temporal service and start:
+`local-durable-preview`. It checkpoints each unit to persistent state, supports
+bounded agent loops and human approval/resume, and records correlated telemetry. For
+a Temporal deployment, run a Temporal service and start:
 
 ```bash
 TEMPORAL_ADDRESS=localhost:7233 npm run worker
 ```
 
 The generic Temporal workflow pins a full definition, executes nondeterministic work
-in activities, uses a signal for approvals, and applies activity retry policy. A
-production deployment should replace the development JSON store with PostgreSQL and
-route run creation through a Temporal client while retaining the same public API.
+in activities, uses a signal for approvals, and applies activity retry policy. Docker
+Compose provides PostgreSQL and a local Vault development server for an end-to-end
+control-plane setup.
 
 ## Safety model
 
@@ -83,8 +147,8 @@ route run creation through a Temporal client while retaining the same public API
   unbounded agent loops are rejected before execution.
 - Agent output is a proposal against a known workflow version and cannot deploy.
 - Workflow saves use optimistic version checks.
-- Connections contain metadata and scopes only; runtime secret brokerage remains an
-  external integration boundary.
+- Connections contain metadata and scopes; secret values are brokered through Vault
+  and never enter workflow definitions, PostgreSQL state, or telemetry.
 - HTTP activities enforce protocol checks, timeouts, and surfaced failures.
 - Human approval, cancellation, costs, tool-like actions, and node transitions are
   auditable events.

@@ -1,4 +1,4 @@
-import { knownNodeTypes, triggerNodeTypes } from './catalog.js';
+import { defaultWorkUnit, knownNodeTypes, triggerNodeTypes } from './catalog.js';
 import { workflowDefinitionSchema } from './schema.js';
 import type {
   ValidationIssue,
@@ -59,6 +59,14 @@ export function validateWorkflow(input: unknown): ValidationResult {
   const issues: ValidationIssue[] = [];
   const nodeIds = new Set<string>();
   const edgeIds = new Set<string>();
+  const agentIds = new Set<string>();
+
+  for (const agent of workflow.agents) {
+    if (agentIds.has(agent.id)) {
+      issues.push({ level: 'error', code: 'agent.duplicate', message: `Agent ID "${agent.id}" is duplicated.` });
+    }
+    agentIds.add(agent.id);
+  }
 
   for (const node of workflow.nodes) {
     if (nodeIds.has(node.id)) {
@@ -71,6 +79,22 @@ export function validateWorkflow(input: unknown): ValidationResult {
     }
     nodeIds.add(node.id);
 
+    if (node.unit === undefined) {
+      issues.push({
+        level: 'error',
+        code: 'unit.definition.missing',
+        message: 'Every workflow node must declare a versioned work-unit contract.',
+        nodeId: node.id,
+      });
+    } else if (node.unit.kind !== defaultWorkUnit(node.type).kind) {
+      issues.push({
+        level: 'error',
+        code: 'unit.kind.mismatch',
+        message: `Node type "${node.type}" must use a ${defaultWorkUnit(node.type).kind} work unit.`,
+        nodeId: node.id,
+      });
+    }
+
     if (!knownNodeTypes.has(node.type)) {
       issues.push({
         level: 'error',
@@ -81,6 +105,18 @@ export function validateWorkflow(input: unknown): ValidationResult {
     }
 
     if (node.type === 'agentLoop') {
+      const agentId = node.config.agentId;
+      const agent = typeof agentId === 'string'
+        ? workflow.agents.find((candidate) => candidate.id === agentId)
+        : undefined;
+      if (agent === undefined) {
+        issues.push({
+          level: 'error',
+          code: 'agent.definition.missing',
+          message: 'Agent loops must reference an agent definition declared by the workflow creator.',
+          nodeId: node.id,
+        });
+      }
       const maxIterations = node.config.maxIterations;
       if (
         typeof maxIterations !== 'number' ||
@@ -92,6 +128,14 @@ export function validateWorkflow(input: unknown): ValidationResult {
           level: 'error',
           code: 'agent.budget',
           message: 'Agent loops require maxIterations between 1 and 25.',
+          nodeId: node.id,
+        });
+      }
+      if (agent !== undefined && typeof maxIterations === 'number' && maxIterations > agent.limits.maxIterations) {
+        issues.push({
+          level: 'error',
+          code: 'agent.limit.exceeded',
+          message: `Agent loop iterations cannot exceed the referenced agent limit of ${agent.limits.maxIterations}.`,
           nodeId: node.id,
         });
       }

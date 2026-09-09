@@ -2,11 +2,10 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { createSeedState } from '../domain/seed.js';
-import type { PlatformState } from '../domain/types.js';
+import type { PlatformState, RunEvent } from '../domain/types.js';
+import { normalizePlatformState, type PlatformStore, type StateMutation } from './store.js';
 
-type StateMutation<T> = (state: PlatformState) => T | Promise<T>;
-
-export class JsonStore {
+export class JsonStore implements PlatformStore {
   private state: PlatformState | undefined;
   private loadPromise: Promise<PlatformState> | undefined;
   private queue: Promise<void> = Promise.resolve();
@@ -37,6 +36,20 @@ export class JsonStore {
     return structuredClone(await operation);
   }
 
+  public async appendEvent(event: RunEvent): Promise<void> {
+    await this.mutate((state) => {
+      state.events.push(event);
+    });
+  }
+
+  public listEvents(runId?: string): Promise<RunEvent[]> {
+    return this.read((state) =>
+      state.events
+        .filter((event) => runId === undefined || event.runId === runId)
+        .sort((left, right) => left.timestamp.localeCompare(right.timestamp)),
+    );
+  }
+
   private async load(): Promise<PlatformState> {
     if (this.state !== undefined) {
       return this.state;
@@ -49,7 +62,8 @@ export class JsonStore {
   private async loadInitialState(): Promise<PlatformState> {
     try {
       const contents = await readFile(this.filePath, 'utf8');
-      return JSON.parse(contents) as PlatformState;
+      const state = JSON.parse(contents) as PlatformState;
+      return normalizePlatformState(state);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw error;

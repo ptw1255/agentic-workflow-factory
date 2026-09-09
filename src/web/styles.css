@@ -254,6 +254,13 @@ h1, h2, h3, p { margin-top: 0; }
 .search-field input { background: transparent; border: 0; color: var(--text); min-width: 0; outline: 0; padding: 9px 0; width: 100%; }
 .search-field input::placeholder { color: #5c6c84; }
 .palette-list { padding: 7px 0 30px; }
+.agent-box-panel { border-top: 1px solid var(--border); margin-top: 6px; padding: 14px 0 22px; }
+.agent-box-panel summary { align-items: center; cursor: pointer; display: flex; font-size: 12px; font-weight: 800; justify-content: space-between; list-style: none; }
+.agent-box-panel summary::-webkit-details-marker { display: none; }
+.agent-box-panel p { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 10px 0; }
+.agent-box-panel textarea { background: #0a111d; border: 1px solid var(--border); border-radius: 7px; color: #cdd8e8; font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; line-height: 1.45; min-height: 130px; padding: 9px; resize: vertical; width: 100%; }
+.agent-box-panel textarea.invalid { border-color: var(--red); }
+.agent-box-panel small { color: var(--subtle); display: block; font-size: 10px; margin-top: 5px; }
 .palette-group h3 { color: #718097; font-size: 9px; letter-spacing: .11em; margin: 15px 7px 6px; text-transform: uppercase; }
 .palette-item {
   align-items: center;

@@ -61,12 +61,27 @@ export async function executeWorkflow(
       await condition(() => approved.has(node.id));
     }
 
+    const activityConfig = { ...node.config };
+    if (node.type === 'agentLoop') {
+      const agentId = node.config.agentId;
+      const agent = typeof agentId === 'string'
+        ? input.definition.agents.find((candidate) => candidate.id === agentId)
+        : undefined;
+      if (agent === undefined) {
+        throw new Error('Agent loop references a missing agent definition.');
+      }
+      activityConfig.maxIterations = Math.min(
+        typeof node.config.maxIterations === 'number' ? node.config.maxIterations : agent.limits.maxIterations,
+        agent.limits.maxIterations,
+      );
+    }
+
     const activityResult = await executeNodeActivity({
       runId: input.runId,
       nodeId: node.id,
       nodeType: node.type,
       label: node.label,
-      config: node.config,
+      config: activityConfig,
     });
     completed.add(node.id);
     for (const edge of input.definition.edges.filter(

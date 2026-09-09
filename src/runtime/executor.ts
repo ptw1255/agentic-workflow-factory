@@ -8,7 +8,7 @@ import type {
 } from '../domain/types.js';
 import { validateWorkflow } from '../domain/validator.js';
 import type { EventService } from '../observability/event-service.js';
-import type { JsonStore } from '../storage/json-store.js';
+import type { PlatformStore } from '../storage/store.js';
 
 const MAX_WAIT_MS = 5_000;
 const HTTP_TIMEOUT_MS = 10_000;
@@ -39,7 +39,7 @@ export class LocalWorkflowExecutor {
   private readonly activeRuns = new Map<string, AbortController>();
 
   public constructor(
-    private readonly store: JsonStore,
+    private readonly store: PlatformStore,
     private readonly events: EventService,
   ) {}
 
@@ -82,6 +82,7 @@ export class LocalWorkflowExecutor {
       workflowId: workflow.id,
       workflowName: workflow.name,
       workflowVersion: workflow.version,
+      traceId: randomUUID().replaceAll('-', '').slice(0, 32),
       status: 'queued',
       startedAt: now,
       costUsd: 0,
@@ -90,6 +91,7 @@ export class LocalWorkflowExecutor {
       completedNodeIds: [],
       activatedNodeIds: [trigger.id],
       approvedNodeIds: [],
+      unitOutputs: {},
     };
 
     await this.store.mutate((state) => {
@@ -201,19 +203,61 @@ export class LocalWorkflowExecutor {
           return;
         }
 
-        const result = await this.executeNode(
-          runId,
-          nextNode,
-          controller.signal,
-        );
-        const completed = await this.completeNode(
-          runId,
-          context.workflow,
-          nextNode,
-          result,
-        );
-        if (!completed) {
-          return;
+        const currentRun = context.run;
+        const unitStartedAt = Date.now();
+        await this.events.emit(runId, 'unit.started', `${nextNode.label} unit started.`, {
+          nodeId: nextNode.id,
+          signal: 'trace',
+          spanKind: nextNode.unit?.kind === 'agent' ? 'agent' : 'chain',
+          attributes: {
+            'work.unit.kind': nextNode.unit?.kind ?? 'unknown',
+            'work.unit.version': nextNode.unit?.version ?? 0,
+            'work.unit.input_schema': nextNode.unit?.inputSchema ?? 'unknown',
+            'work.unit.output_schema': nextNode.unit?.outputSchema ?? 'unknown',
+          },
+        });
+        try {
+          const inputs = context.workflow.edges
+            .filter((edge) => edge.target === nextNode.id && currentRun.unitOutputs[edge.source] !== undefined)
+            .map((edge) => currentRun.unitOutputs[edge.source]);
+          const result = await this.executeNode(runId, nextNode, controller.signal, inputs);
+          await this.events.emit(runId, 'unit.output.produced', `${nextNode.label} produced output.`, {
+            nodeId: nextNode.id,
+            signal: 'trace',
+            spanKind: nextNode.unit?.kind === 'agent' ? 'agent' : 'chain',
+            attributes: { 'work.unit.output_schema': nextNode.unit?.outputSchema ?? 'unknown' },
+          });
+          const completed = await this.completeNode(context.run.id, context.workflow, nextNode, result);
+          if (!completed) return;
+          await this.events.emit(runId, 'unit.completed', `${nextNode.label} unit completed.`, {
+            nodeId: nextNode.id,
+            signal: 'trace',
+            spanKind: nextNode.unit?.kind === 'agent' ? 'agent' : 'chain',
+            attributes: {
+              'work.unit.duration_ms': Date.now() - unitStartedAt,
+              'work.unit.status': 'completed',
+            },
+          });
+          await this.events.emit(runId, 'unit.duration', `${nextNode.label} duration recorded.`, {
+            nodeId: nextNode.id,
+            signal: 'metric',
+            attributes: {
+              'metric.name': 'unit.duration_ms',
+              'metric.value': Date.now() - unitStartedAt,
+              'work.unit.kind': nextNode.unit?.kind ?? 'unknown',
+            },
+          });
+        } catch (error) {
+          await this.events.emit(runId, 'unit.failed', `${nextNode.label} unit failed.`, {
+            nodeId: nextNode.id,
+            severityText: 'ERROR',
+            attributes: {
+              'work.unit.duration_ms': Date.now() - unitStartedAt,
+              'work.unit.status': 'failed',
+            },
+            data: { error: error instanceof Error ? error.message : 'Unknown unit failure.' },
+          });
+          throw error;
         }
       }
     } catch (error) {
@@ -259,10 +303,17 @@ export class LocalWorkflowExecutor {
     runId: string,
     node: WorkflowNode,
     signal: AbortSignal,
+    inputs: unknown[] = [],
   ): Promise<unknown> {
     signal.throwIfAborted();
     await this.events.emit(runId, 'node.started', `${node.label} started.`, {
       nodeId: node.id,
+      signal: 'trace',
+      spanKind: node.type === 'agentLoop' ? 'agent' : 'chain',
+      attributes: {
+        'workflow.node.type': node.type,
+        'openinference.span.kind': node.type === 'agentLoop' ? 'AGENT' : 'CHAIN',
+      },
       data: { nodeType: node.type },
     });
 
@@ -290,6 +341,9 @@ export class LocalWorkflowExecutor {
       case 'output':
         result = node.config.value ?? true;
         break;
+      case 'code':
+        result = this.executeDeterministicCode(node, inputs);
+        break;
       case 'notification':
         signal.throwIfAborted();
         await this.events.emit(
@@ -303,6 +357,29 @@ export class LocalWorkflowExecutor {
         result = true;
     }
     return result;
+  }
+
+  private executeDeterministicCode(node: WorkflowNode, inputs: unknown[]): unknown {
+    const operation = typeof node.config.operation === 'string'
+      ? node.config.operation
+      : 'identity';
+    const value = node.config.value ?? inputs[0] ?? '';
+    switch (operation) {
+      case 'identity':
+        return value;
+      case 'uppercase':
+        return String(value).toUpperCase();
+      case 'lowercase':
+        return String(value).toLowerCase();
+      case 'trim':
+        return String(value).trim();
+      case 'json.parse':
+        return JSON.parse(String(value)) as unknown;
+      case 'json.stringify':
+        return JSON.stringify(value);
+      default:
+        throw new Error(`Unsupported deterministic code operation "${operation}".`);
+    }
   }
 
   private async executeHttp(
@@ -342,10 +419,20 @@ export class LocalWorkflowExecutor {
     node: WorkflowNode,
     signal: AbortSignal,
   ): Promise<Record<string, unknown>> {
+    const agentId = node.config.agentId;
+    const agent = typeof agentId === 'string'
+      ? await this.store.read((state) => {
+          const run = state.runs.find((candidate) => candidate.id === runId);
+          return run?.workflowDefinition.agents.find((candidate) => candidate.id === agentId);
+        })
+      : undefined;
+    if (agent === undefined) {
+      throw new Error('Agent loop references a missing agent definition.');
+    }
     const maxIterations =
       typeof node.config.maxIterations === 'number'
-        ? node.config.maxIterations
-        : 1;
+        ? Math.min(node.config.maxIterations, agent.limits.maxIterations)
+        : agent.limits.maxIterations;
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       signal.throwIfAborted();
       await this.events.emit(
@@ -354,7 +441,19 @@ export class LocalWorkflowExecutor {
         `Agent iteration ${iteration} of ${maxIterations}.`,
         {
           nodeId: node.id,
-          data: { iteration, goal: node.config.goal ?? 'Complete the task' },
+          signal: 'trace',
+          spanKind: 'agent',
+          attributes: {
+            'openinference.span.kind': 'AGENT',
+            'agent.id': agent.id,
+            'agent.version': agent.version,
+            'agent.iteration': iteration,
+            'agent.max_iterations': maxIterations,
+            'llm.model_name': agent.model.model ?? agent.model.routingAlias ?? 'unconfigured',
+          },
+          ...(agent.observability.captureInputs
+            ? { data: { iteration, goal: node.config.goal ?? 'Complete the task' } }
+            : { data: { iteration } }),
         },
       );
       const continued = await this.store.mutate((state) => {
@@ -364,6 +463,17 @@ export class LocalWorkflowExecutor {
         }
         run.costUsd = Number((run.costUsd + 0.0015).toFixed(4));
         return true;
+      });
+      await this.events.emit(runId, 'agent.cost', 'Agent cost recorded.', {
+        nodeId: node.id,
+        signal: 'metric',
+        spanKind: 'agent',
+        attributes: {
+          'metric.name': 'gen_ai.cost.usd',
+          'metric.value': 0.0015,
+          'agent.id': agent.id,
+          'agent.version': agent.version,
+        },
       });
       if (!continued) {
         signal.throwIfAborted();
@@ -390,6 +500,7 @@ export class LocalWorkflowExecutor {
       if (!run.completedNodeIds.includes(node.id)) {
         run.completedNodeIds.push(node.id);
       }
+      run.unitOutputs[node.id] = result;
       for (const edge of workflow.edges.filter(
         (candidate) =>
           candidate.source === node.id && edgeMatches(candidate, result),
@@ -403,9 +514,14 @@ export class LocalWorkflowExecutor {
     if (!completed) {
       return false;
     }
+    const agentDefinition = node.type === 'agentLoop' && typeof node.config.agentId === 'string'
+      ? workflow.agents.find((candidate) => candidate.id === node.config.agentId)
+      : undefined;
     await this.events.emit(runId, 'node.completed', `${node.label} completed.`, {
       nodeId: node.id,
-      data: { result },
+      ...(agentDefinition?.observability.captureOutputs || agentDefinition === undefined
+        ? { data: { result } }
+        : { data: { result: '[redacted]' } }),
     });
     return true;
   }

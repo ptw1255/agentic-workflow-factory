@@ -51,6 +51,31 @@ export async function executeNodeActivity(
         nodeId: input.nodeId,
         result: input.config.result === true,
       };
+    case 'agentLoop': {
+      const maxIterations =
+        typeof input.config.maxIterations === 'number'
+          ? input.config.maxIterations
+          : 1;
+      return {
+        nodeId: input.nodeId,
+        result: { iterations: maxIterations, outcome: 'bounded-completion' },
+      };
+    }
+    case 'code': {
+      const operation = typeof input.config.operation === 'string'
+        ? input.config.operation
+        : 'identity';
+      const value = input.config.value ?? '';
+      switch (operation) {
+        case 'identity': return { nodeId: input.nodeId, result: value };
+        case 'uppercase': return { nodeId: input.nodeId, result: String(value).toUpperCase() };
+        case 'lowercase': return { nodeId: input.nodeId, result: String(value).toLowerCase() };
+        case 'trim': return { nodeId: input.nodeId, result: String(value).trim() };
+        case 'json.parse': return { nodeId: input.nodeId, result: JSON.parse(String(value)) as unknown };
+        case 'json.stringify': return { nodeId: input.nodeId, result: JSON.stringify(value) };
+        default: throw new Error(`Unsupported deterministic code operation "${operation}".`);
+      }
+    }
     default:
       return {
         nodeId: input.nodeId,

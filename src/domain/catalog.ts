@@ -1,4 +1,30 @@
-import type { NodeCatalogItem } from './types.js';
+import type { NodeCatalogItem, WorkUnitDefinition, WorkUnitKind } from './types.js';
+
+const unitKinds: Record<string, WorkUnitKind> = {
+  manualTrigger: 'deterministic',
+  scheduleTrigger: 'deterministic',
+  webhookTrigger: 'connector',
+  transform: 'deterministic',
+  condition: 'deterministic',
+  wait: 'deterministic',
+  httpRequest: 'connector',
+  approval: 'human',
+  agentLoop: 'agent',
+  notification: 'consumer',
+  output: 'consumer',
+  code: 'deterministic',
+};
+
+export function defaultWorkUnit(type: string): WorkUnitDefinition {
+  return {
+    kind: unitKinds[type] ?? 'deterministic',
+    version: 1,
+    inputSchema: 'any',
+    outputSchema: 'any',
+    timeoutMs: 60_000,
+    retryAttempts: 1,
+  };
+}
 
 export const nodeCatalog: NodeCatalogItem[] = [
   {
@@ -28,6 +54,13 @@ export const nodeCatalog: NodeCatalogItem[] = [
     category: 'Data',
     description: 'Create a structured value for downstream nodes.',
     defaultConfig: { value: 'Prepared workflow context' },
+  },
+  {
+    type: 'code',
+    label: 'Deterministic code',
+    category: 'Data',
+    description: 'Run a safe, deterministic built-in transformation before the next unit.',
+    defaultConfig: { operation: 'uppercase', value: '' },
   },
   {
     type: 'condition',

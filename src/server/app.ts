@@ -9,6 +9,7 @@ import Fastify, {
 
 import { ProposalService } from '../agents/proposal-service.js';
 import { ConnectionService } from '../connections/connection-service.js';
+import { VaultSecretBroker } from '../connections/vault-secret-broker.js';
 import { nodeCatalog } from '../domain/catalog.js';
 import {
   createConnectionSchema,
@@ -22,9 +23,14 @@ import { calculateFactoryMetrics } from '../factory/metrics.js';
 import { EventService } from '../observability/event-service.js';
 import { LocalWorkflowExecutor } from '../runtime/executor.js';
 import { JsonStore } from '../storage/json-store.js';
+import { PostgresStore } from '../storage/postgres-store.js';
+import type { PlatformStore } from '../storage/store.js';
 
 export interface AppOptions {
   dataFile?: string;
+  databaseUrl?: string;
+  store?: PlatformStore;
+  secretBroker?: import('../connections/secret-broker.js').SecretBroker;
   logger?: boolean;
   serveStatic?: boolean;
 }
@@ -41,11 +47,24 @@ export async function createApp(
     options.dataFile ??
     process.env.DATA_FILE ??
     path.join(process.cwd(), '.data', 'state.json');
-  const store = new JsonStore(dataFile);
+  const databaseUrl = options.databaseUrl ?? process.env.DATABASE_URL;
+  const store: PlatformStore = options.store ?? (databaseUrl === undefined
+    ? new JsonStore(dataFile)
+    : new PostgresStore(databaseUrl));
+  const vaultAddress = process.env.VAULT_ADDR;
+  const vaultToken = process.env.VAULT_TOKEN;
+  const secretBroker = options.secretBroker ?? (
+    vaultAddress !== undefined && vaultToken !== undefined
+      ? new VaultSecretBroker({ address: vaultAddress, token: vaultToken })
+      : undefined
+  );
   const events = new EventService(store);
   const executor = new LocalWorkflowExecutor(store, events);
-  const connections = new ConnectionService(store);
+  const connections = new ConnectionService(store, secretBroker);
   const proposals = new ProposalService(store);
+  if (store.close !== undefined) {
+    app.addHook('onClose', async () => store.close?.());
+  }
 
   app.setErrorHandler((error: FastifyError, _request, reply) => {
     const statusCode = error.validation === undefined ? 400 : 422;
@@ -58,6 +77,7 @@ export async function createApp(
   app.get('/api/health', async () => ({
     status: 'ok',
     executionEngine: 'local-durable-preview',
+    storage: databaseUrl === undefined ? 'json' : 'postgresql',
     timestamp: new Date().toISOString(),
   }));
 
@@ -76,6 +96,44 @@ export async function createApp(
     }
     return workflow;
   });
+
+  app.get<{ Params: { id: string } }>(
+    '/api/workflows/:id/versions',
+    async (request, reply) => {
+      const exists = await store.read((state) =>
+        state.workflows.some((workflow) => workflow.id === request.params.id),
+      );
+      if (!exists) {
+        return reply.status(404).send({ message: 'Workflow not found.' });
+      }
+      const versions = await store.read((state) =>
+        state.workflowVersions
+          .filter((workflow) => workflow.id === request.params.id)
+          .sort((left, right) => right.version - left.version),
+      );
+      return { items: versions };
+    },
+  );
+
+  app.get<{ Params: { id: string; version: string } }>(
+    '/api/workflows/:id/versions/:version',
+    async (request, reply) => {
+      const version = Number(request.params.version);
+      if (!Number.isSafeInteger(version) || version < 1) {
+        return reply.status(400).send({ message: 'Workflow version must be a positive integer.' });
+      }
+      const workflow = await store.read((state) =>
+        state.workflowVersions.find(
+          (candidate) =>
+            candidate.id === request.params.id && candidate.version === version,
+        ),
+      );
+      if (workflow === undefined) {
+        return reply.status(404).send({ message: 'Workflow version not found.' });
+      }
+      return workflow;
+    },
+  );
 
   app.put<{ Params: { id: string }; Body: WorkflowDefinition }>(
     '/api/workflows/:id',
@@ -122,6 +180,7 @@ export async function createApp(
           updatedAt: new Date().toISOString(),
         };
         state.workflows[index] = next;
+        state.workflowVersions.push(structuredClone(next));
         return next;
       });
       return saved;
@@ -197,6 +256,22 @@ export async function createApp(
   app.get<{ Querystring: { runId?: string } }>('/api/events', async (request) => ({
     items: await events.list(request.query.runId),
   }));
+
+  app.get<{
+    Querystring: { runId?: string; signal?: 'log' | 'trace' | 'metric' };
+  }>('/api/telemetry', async (request) => {
+    const items = await events.list(request.query.runId);
+    return {
+      resource: {
+        'service.name': 'agentic-workflow-factory',
+        'telemetry.sdk.name': 'opentelemetry',
+        'openinference.version': '1',
+      },
+      items: request.query.signal === undefined
+        ? items
+        : items.filter((event) => event.signal === request.query.signal),
+    };
+  });
 
   app.get('/api/connections', async () => ({ items: await connections.list() }));
 

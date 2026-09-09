@@ -27,6 +27,32 @@ describe('validateWorkflow', () => {
     );
   });
 
+  it('requires every agent loop to reference a creator-defined agent box', () => {
+    const workflow = structuredClone(seedWorkflow);
+    const agent = workflow.nodes.find((node) => node.type === 'agentLoop');
+    if (agent === undefined) throw new Error('Seed workflow is missing its agent node.');
+    agent.config.agentId = 'not-defined';
+
+    const result = validateWorkflow(workflow);
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: 'agent.definition.missing', nodeId: agent.id }),
+    );
+  });
+
+  it('requires every node to declare a work-unit contract', () => {
+    const workflow = structuredClone(seedWorkflow);
+    delete workflow.nodes[0]?.unit;
+
+    const result = validateWorkflow(workflow);
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: 'unit.definition.missing', nodeId: 'trigger' }),
+    );
+  });
+
   it('rejects graph cycles', () => {
     const workflow = structuredClone(seedWorkflow);
     workflow.edges.push({

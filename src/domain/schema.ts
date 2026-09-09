@@ -2,6 +2,60 @@ import { z } from 'zod';
 
 const configSchema = z.record(z.string(), z.unknown());
 
+export const workUnitSchema = z.object({
+  kind: z.enum(['deterministic', 'agent', 'human', 'connector', 'consumer', 'evaluator']),
+  version: z.number().int().positive(),
+  inputSchema: z.string().min(1),
+  outputSchema: z.string().min(1),
+  timeoutMs: z.number().int().positive(),
+  retryAttempts: z.number().int().min(1).max(10),
+  idempotencyKey: z.string().min(1).optional(),
+});
+
+export const agentDefinitionSchema = z.object({
+  id: z.string().min(1),
+  version: z.number().int().positive(),
+  name: z.string().min(1),
+  purpose: z.string().min(1),
+  instructions: z.string().min(1),
+  skills: z.array(z.string().min(1)).max(100),
+  tools: z.array(z.string().min(1)).max(100),
+  model: z.object({
+    provider: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    routingAlias: z.string().min(1).optional(),
+  }),
+  inputSchema: configSchema,
+  outputSchema: configSchema,
+  boundaries: z.object({
+    allowedConnections: z.array(z.string()),
+    allowedRepositories: z.array(z.string()),
+    protectedPaths: z.array(z.string()),
+    network: z.enum(['deny-by-default', 'allow-listed']),
+    dataClasses: z.array(z.string()),
+  }),
+  limits: z.object({
+    maxIterations: z.number().int().min(1).max(25),
+    maxCostUsd: z.number().nonnegative(),
+    maxDurationMs: z.number().int().positive(),
+    maxTokens: z.number().int().positive().optional(),
+  }),
+  termination: z.object({
+    successConditions: z.array(z.string().min(1)).min(1),
+    failureConditions: z.array(z.string().min(1)),
+    escalationConditions: z.array(z.string().min(1)),
+  }),
+  approval: z.object({
+    beforeSideEffects: z.boolean(),
+    beforeTools: z.array(z.string()),
+  }),
+  observability: z.object({
+    captureInputs: z.boolean(),
+    captureOutputs: z.boolean(),
+    redactedFields: z.array(z.string()),
+  }),
+});
+
 export const workflowNodeSchema = z.object({
   id: z.string().min(1),
   type: z.string().min(1),
@@ -11,6 +65,7 @@ export const workflowNodeSchema = z.object({
     y: z.number().finite(),
   }),
   config: configSchema,
+  unit: workUnitSchema.optional(),
 });
 
 export const workflowEdgeSchema = z.object({
@@ -31,6 +86,7 @@ export const workflowDefinitionSchema = z.object({
   trigger: z.object({
     type: z.string().min(1),
   }),
+  agents: z.array(agentDefinitionSchema),
   nodes: z.array(workflowNodeSchema).min(1),
   edges: z.array(workflowEdgeSchema),
   createdAt: z.iso.datetime(),
@@ -42,6 +98,7 @@ export const createConnectionSchema = z.object({
   connector: z.string().trim().min(1).max(100),
   environment: z.string().trim().min(1).max(50),
   scopes: z.array(z.string().trim().min(1)).max(25),
+  secret: z.string().min(1).max(10_000).optional(),
 });
 
 export const createProposalSchema = z.object({

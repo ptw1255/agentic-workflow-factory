@@ -1,4 +1,5 @@
-import type { ConnectionRecord, PlatformState, WorkflowDefinition } from './types.js';
+import type { AgentDefinition, ConnectionRecord, PlatformState, WorkflowDefinition } from './types.js';
+import { defaultWorkUnit } from './catalog.js';
 
 const createdAt = '2026-08-28T15:00:00.000Z';
 
@@ -10,6 +11,7 @@ export const seedWorkflow: WorkflowDefinition = {
   version: 1,
   status: 'draft',
   trigger: { type: 'manualTrigger' },
+  agents: [],
   nodes: [
     {
       id: 'trigger',
@@ -32,6 +34,7 @@ export const seedWorkflow: WorkflowDefinition = {
       position: { x: 560, y: 180 },
       config: {
         goal: 'Assess feasibility, risk, and the next best action',
+        agentId: 'request-assessor',
         maxIterations: 3,
       },
     },
@@ -63,6 +66,39 @@ export const seedWorkflow: WorkflowDefinition = {
   updatedAt: createdAt,
 };
 
+const seedAgent: AgentDefinition = {
+  id: 'request-assessor',
+  version: 1,
+  name: 'Request assessor',
+  purpose: 'Assess feasibility, risk, and the next best action for an incoming request.',
+  instructions: 'Produce a concise assessment grounded in the workflow input and stop when the success criteria are met.',
+  skills: ['requirements-analysis', 'risk-assessment'],
+  tools: [],
+  model: { routingAlias: 'default-safe' },
+  inputSchema: { type: 'object' },
+  outputSchema: { type: 'object', properties: { assessment: { type: 'string' } } },
+  boundaries: {
+    allowedConnections: [],
+    allowedRepositories: [],
+    protectedPaths: [],
+    network: 'deny-by-default',
+    dataClasses: ['internal'],
+  },
+  limits: { maxIterations: 3, maxCostUsd: 0.01, maxDurationMs: 60_000 },
+  termination: {
+    successConditions: ['Assessment is complete and includes a recommended next action.'],
+    failureConditions: ['Required request context is missing.'],
+    escalationConditions: ['Risk cannot be classified with available evidence.'],
+  },
+  approval: { beforeSideEffects: false, beforeTools: [] },
+  observability: { captureInputs: false, captureOutputs: false, redactedFields: ['prompt', 'output', 'secret'] },
+};
+
+seedWorkflow.agents = [seedAgent];
+for (const node of seedWorkflow.nodes) {
+  node.unit = defaultWorkUnit(node.type);
+}
+
 const seedConnections: ConnectionRecord[] = [
   {
     id: 'connection-product-api',
@@ -73,6 +109,7 @@ const seedConnections: ConnectionRecord[] = [
     scopes: ['api:read'],
     lastCheckedAt: createdAt,
     usageCount: 0,
+    secretConfigured: false,
   },
   {
     id: 'connection-source-control',
@@ -83,12 +120,14 @@ const seedConnections: ConnectionRecord[] = [
     scopes: ['contents:read', 'pull_requests:write'],
     lastCheckedAt: createdAt,
     usageCount: 0,
+    secretConfigured: false,
   },
 ];
 
 export function createSeedState(): PlatformState {
   return {
     workflows: [structuredClone(seedWorkflow)],
+    workflowVersions: [structuredClone(seedWorkflow)],
     runs: [],
     events: [],
     connections: structuredClone(seedConnections),
