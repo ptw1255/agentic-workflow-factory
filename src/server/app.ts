@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import fastifyStatic from '@fastify/static';
@@ -21,11 +21,12 @@ import {
   createTenantSchema,
   workflowDefinitionSchema,
 } from '../domain/schema.js';
-import type { WorkflowDefinition } from '../domain/types.js';
+import type { ArtifactRecord, ProjectFileRecord, WorkflowDefinition } from '../domain/types.js';
 import { validateWorkflow } from '../domain/validator.js';
 import { defaultFactoryManifest } from '../factory/manifest.js';
 import { calculateFactoryMetrics } from '../factory/metrics.js';
 import { EventService } from '../observability/event-service.js';
+import { compileResourceFiles } from '../declarative/resources.js';
 import { parseProjectYaml, stringifyProjectYaml } from '../declarative/yaml.js';
 import { CompositeTelemetryExporter, OtlpHttpExporter } from '../observability/otlp-exporter.js';
 import { LocalWorkflowExecutor } from '../runtime/executor.js';
@@ -295,6 +296,87 @@ export async function createApp(
       }
     },
   );
+
+  app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
+    '/api/projects/:projectId/files',
+    async (request, reply) => {
+      const scope = scopeFromRequest(request);
+      const files = await store.read((state) => state.files.filter((file) => file.projectId === request.params.projectId && file.tenantId === scope.tenantId));
+      if (request.query.path === undefined) return { items: files.map(({ content: _content, ...file }) => file) };
+      const file = files.find((candidate) => candidate.path === request.query.path);
+      if (file === undefined) return reply.status(404).send({ message: 'Project file not found.' });
+      return file;
+    },
+  );
+
+  app.put<{ Params: { projectId: string }; Body: unknown }>(
+    '/api/projects/:projectId/files',
+    async (request, reply) => {
+      const scope = scopeFromRequest(request);
+      const body = request.body as { path?: unknown; content?: unknown };
+      if (typeof body?.path !== 'string' || typeof body.content !== 'string' || body.path.trim() === '' || body.path.includes('..')) {
+        return reply.status(422).send({ message: 'File path and text content are required; path traversal is not allowed.' });
+      }
+      const projectExists = await store.read((state) => state.projects.some((project) => project.id === request.params.projectId && project.tenantId === scope.tenantId));
+      if (!projectExists) return reply.status(404).send({ message: 'Project not found.' });
+      const file: ProjectFileRecord = {
+        tenantId: scope.tenantId,
+        projectId: request.params.projectId,
+        path: body.path,
+        content: body.content,
+        sha256: createHash('sha256').update(body.content).digest('hex'),
+        updatedAt: new Date().toISOString(),
+      };
+      await store.mutate((state) => {
+        const index = state.files.findIndex((candidate) => candidate.projectId === file.projectId && candidate.tenantId === file.tenantId && candidate.path === file.path);
+        if (index < 0) state.files.push(file); else state.files[index] = file;
+      });
+      return file;
+    },
+  );
+
+  app.delete<{ Params: { projectId: string }; Body: unknown }>(
+    '/api/projects/:projectId/files',
+    async (request, reply) => {
+      const scope = scopeFromRequest(request);
+      const body = request.body as { path?: unknown };
+      if (typeof body?.path !== 'string' || body.path.trim() === '') return reply.status(422).send({ message: 'File path is required.' });
+      const removed = await store.mutate((state) => {
+        const before = state.files.length;
+        state.files = state.files.filter((file) => !(file.projectId === request.params.projectId && file.tenantId === scope.tenantId && file.path === body.path));
+        return state.files.length !== before;
+      });
+      if (!removed) return reply.status(404).send({ message: 'Project file not found.' });
+      return { deleted: true, path: body.path };
+    },
+  );
+
+  app.post<{ Params: { projectId: string }; Body: unknown }>(
+    '/api/projects/:projectId/compile',
+    async (request, reply) => {
+      const scope = scopeFromRequest(request);
+      const body = request.body as { environment?: unknown };
+      const environment = typeof body?.environment === 'string' && body.environment.trim() !== '' ? body.environment : 'local';
+      const files = await store.read((state) => state.files.filter((file) => file.projectId === request.params.projectId && file.tenantId === scope.tenantId));
+      try {
+        const compiled = compileResourceFiles(files.map((file) => ({ path: file.path, source: file.content })), { tenantId: scope.tenantId, projectId: request.params.projectId });
+        const sources = files.map((file) => ({ path: file.path, sha256: file.sha256 }));
+        const digest = createHash('sha256').update(JSON.stringify({ environment, sources, workflows: compiled.workflows })).digest('hex');
+        const artifact: ArtifactRecord = { tenantId: scope.tenantId, projectId: request.params.projectId, id: `sha256:${digest}`, environment, compilerVersion: '0.1.0', sources, workflows: compiled.workflows, createdAt: new Date().toISOString() };
+        await store.mutate((state) => {
+          if (!state.artifacts.some((candidate) => candidate.id === artifact.id && candidate.projectId === artifact.projectId && candidate.tenantId === artifact.tenantId)) state.artifacts.push(artifact);
+        });
+        return artifact;
+      } catch (error) {
+        return reply.status(422).send({ message: errorMessage(error) });
+      }
+    },
+  );
+
+  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/artifacts', async (request) => {
+    const scope = scopeFromRequest(request);
+    return { items: await store.read((state) => state.artifacts.filter((artifact) => artifact.projectId === request.params.projectId && artifact.tenantId === scope.tenantId)) };
+  });
 
   app.get('/api/workflows', async (request) => {
     const scope = scopeFromRequest(request);

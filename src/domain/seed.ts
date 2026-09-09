@@ -151,5 +151,7 @@ export function createSeedState(): PlatformState {
     events: [],
     connections: structuredClone(seedConnections),
     proposals: [],
+    files: [],
+    artifacts: [],
   };
 }
