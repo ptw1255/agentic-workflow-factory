@@ -6,6 +6,7 @@ import type {
   RunEvent,
   RunRecord,
   ProjectRecord,
+  ProjectFileRecord,
   TenantRecord,
   ValidationResult,
   WorkflowDefinition,
@@ -71,6 +72,9 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/declarative`,
       { method: 'POST', body: JSON.stringify({ source }) },
     ),
+  projectFiles: (projectId: string) => request<ItemsResponse<ProjectFileRecord>>(`/api/projects/${encodeURIComponent(projectId)}/files`),
+  projectFile: (projectId: string, filePath: string) => request<ProjectFileRecord>(`/api/projects/${encodeURIComponent(projectId)}/files?path=${encodeURIComponent(filePath)}`),
+  saveProjectFile: (projectId: string, filePath: string, content: string) => request<ProjectFileRecord>(`/api/projects/${encodeURIComponent(projectId)}/files`, { method: 'PUT', body: JSON.stringify({ path: filePath, content }) }),
   catalog: () => request<ItemsResponse<NodeCatalogItem>>('/api/catalog/nodes'),
   workflows: () => request<ItemsResponse<WorkflowDefinition>>('/api/workflows'),
   workflow: (id: string) =>

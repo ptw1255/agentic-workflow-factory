@@ -13,6 +13,7 @@ import {
   type NodeChange,
   type OnSelectionChangeParams,
 } from '@xyflow/react';
+import Editor from '@monaco-editor/react';
 import {
   type ChangeEvent,
   type FormEvent,
@@ -33,6 +34,7 @@ import type {
   FactoryMetrics,
   NodeCatalogItem,
   ProjectRecord,
+  ProjectFileRecord,
   RunEvent,
   RunRecord,
   ValidationIssue,
@@ -1069,6 +1071,27 @@ function OperationalTree({
   const agentById = new Map(workflow.agents.map((agent) => [agent.id, agent]));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [files, setFiles] = useState<ProjectFileRecord[]>([]);
+  const [selectedPath, setSelectedPath] = useState('project.yaml');
+
+  useEffect(() => {
+    void api.projectFiles(projectId).then((response) => {
+      setFiles(response.items);
+      if (response.items.length > 0 && !response.items.some((file) => file.path === selectedPath)) {
+        setSelectedPath(response.items[0]?.path ?? 'project.yaml');
+      }
+    }).catch(() => setFiles([]));
+  }, [projectId, selectedPath]);
+
+  async function selectFile(file: ProjectFileRecord) {
+    setSelectedPath(file.path);
+    try {
+      const loaded = await api.projectFile(projectId, file.path);
+      if (loaded.content !== undefined) onSourceChange(loaded.content);
+    } catch (loadError) {
+      setError(errorText(loadError));
+    }
+  }
 
   async function applyYaml() {
     setBusy(true);
@@ -1090,17 +1113,17 @@ function OperationalTree({
         <label className="ide-view-selector"><span>View</span><select aria-label="Workspace view" onChange={(event) => onModeChange(event.target.value as 'files' | 'tree' | 'canvas')} value={mode}><option value="files">Files</option><option value="tree">Tree</option><option value="canvas">Canvas</option></select></label>
         <div className="ide-project"><Icon name="factory" size={15} /><strong>{workflow.projectId ?? 'project'}</strong></div>
         <div className="ide-folder"><Icon name="chevron" size={12} /> workflows</div>
-        <button className="ide-file active" type="button"><Icon name="code" size={14} /> project.yaml</button>
-        {workflow.agents.map((agent) => <div className="ide-file muted" key={agent.id}><Icon name="agent" size={14} /> {agent.id}.agent.yaml</div>)}
+        {(files.length > 0 ? files : [{ path: 'project.yaml', sha256: '', projectId, tenantId: '', updatedAt: '' }]).map((file) => <button className={`ide-file ${selectedPath === file.path ? 'active' : ''}`} key={file.path} onClick={() => void selectFile(file)} type="button"><Icon name={file.path.includes('agent') ? 'agent' : 'code'} size={14} /> {file.path}</button>)}
+        {files.length === 0 ? workflow.agents.map((agent) => <div className="ide-file muted" key={agent.id}><Icon name="agent" size={14} /> agents/{agent.id}.agent.yaml</div>) : null}
         <div className="ide-folder"><Icon name="chevron" size={12} /> runtime</div>
         <div className="ide-file muted"><Icon name="runs" size={14} /> runs</div>
         <div className="ide-file muted"><Icon name="operations" size={14} /> telemetry</div>
         <div className="ide-explorer-footer"><span className="system-dot" /> Git-backed definition</div>
       </aside>
       <section className="yaml-panel ide-editor">
-        <div className="ide-tab-bar"><span className="ide-tab active"><Icon name="code" size={13} /> project.yaml <span className="ide-tab-dot" /></span><span className="ide-branch">factory.agentic/v1</span></div>
+        <div className="ide-tab-bar"><span className="ide-tab active"><Icon name="code" size={13} /> {selectedPath} {dirty ? <span className="ide-tab-dot" /> : null}</span><span className="ide-branch">factory.agentic/v1</span></div>
         <div className="ide-editor-heading"><div><span className="eyebrow">Declarative source</span><h2>Project definition</h2><p>Author the loop in YAML. Apply compiles it into the runtime model.</p></div><div className="ide-editor-actions"><span className={dirty ? 'ide-dirty' : 'ide-clean'}>{dirty ? 'Unsaved changes' : 'Synced'}</span><button className="button primary" disabled={!dirty || busy} onClick={() => void applyYaml()} type="button"><Icon name="save" size={14} /> {busy ? 'Applying…' : 'Apply YAML'}</button><button className="icon-button" onClick={onCanvas} title="Open canvas compatibility view" type="button"><Icon name="studio" size={15} /></button></div></div>
-        <div className="yaml-editor-wrap"><div className="yaml-line-numbers" aria-hidden="true">{source.split('\n').map((_, index) => <span key={index}>{index + 1}</span>)}</div><textarea aria-label="Project YAML editor" className="yaml-editor" onChange={(event) => onSourceChange(event.target.value)} spellCheck={false} value={source} /></div>
+        <div className="yaml-editor-wrap"><Editor aria-label="Project source editor" height="100%" language={selectedPath.endsWith('.json') ? 'json' : 'yaml'} onChange={(value) => onSourceChange(value ?? '')} options={{ automaticLayout: true, minimap: { enabled: false }, fontSize: 12, tabSize: 2, wordWrap: 'on' }} theme="vs-dark" value={source} /></div>
         {error === null ? <small className="ide-hint">Review the compiled tree on the right, then apply the file when it is ready. Invalid definitions never replace the active runtime.</small> : <div className="ide-error"><Icon name="warning" size={14} /> {error}</div>}
         <div className="ide-bottom-panel"><div className="ide-bottom-tabs"><strong>Problems</strong><span>Run Output</span><span className={error === null ? 'panel-count clean' : 'panel-count'}>{error === null ? 0 : 1}</span></div><div className="ide-bottom-content">{error === null ? <span>No problems detected in the current source.</span> : <span className="field-error">{error}</span>}</div></div>
       </section>

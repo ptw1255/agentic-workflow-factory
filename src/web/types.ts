@@ -23,6 +23,15 @@ export interface ProjectRecord {
   createdAt: string;
 }
 
+export interface ProjectFileRecord {
+  tenantId: string;
+  projectId: string;
+  path: string;
+  content?: string;
+  sha256: string;
+  updatedAt: string;
+}
+
 export interface Position {
   x: number;
   y: number;
