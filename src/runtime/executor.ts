@@ -9,6 +9,7 @@ import type {
 import { validateWorkflow } from '../domain/validator.js';
 import type { EventService } from '../observability/event-service.js';
 import type { PlatformStore } from '../storage/store.js';
+import { HttpOllamaClient, type OllamaClient } from './ollama.js';
 
 const MAX_WAIT_MS = 5_000;
 const HTTP_TIMEOUT_MS = 10_000;
@@ -41,6 +42,7 @@ export class LocalWorkflowExecutor {
   public constructor(
     private readonly store: PlatformStore,
     private readonly events: EventService,
+    private readonly ollama: OllamaClient = new HttpOllamaClient(),
   ) {}
 
   public async recover(): Promise<number> {
@@ -435,8 +437,15 @@ export class LocalWorkflowExecutor {
       typeof node.config.maxIterations === 'number'
         ? Math.min(node.config.maxIterations, agent.limits.maxIterations)
         : agent.limits.maxIterations;
+    let lastModelOutput: string | undefined;
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       signal.throwIfAborted();
+      const goal = typeof node.config.goal === 'string' ? node.config.goal : 'Complete the task.';
+      const provider = agent.model.provider?.toLowerCase();
+      const modelResult = provider === 'ollama'
+        ? await this.ollama.chat({ agent, goal, signal })
+        : undefined;
+      if (modelResult !== undefined) lastModelOutput = modelResult.content;
       await this.events.emit(
         runId,
         'agent.iteration',
@@ -454,16 +463,33 @@ export class LocalWorkflowExecutor {
             'llm.model_name': agent.model.model ?? agent.model.routingAlias ?? 'unconfigured',
           },
           ...(agent.observability.captureInputs
-            ? { data: { iteration, goal: node.config.goal ?? 'Complete the task' } }
+            ? { data: { iteration, goal } }
             : { data: { iteration } }),
         },
       );
+      if (modelResult !== undefined) {
+        await this.events.emit(runId, 'llm.completed', 'Ollama model completed.', {
+          nodeId: node.id,
+          signal: 'trace',
+          spanKind: 'llm',
+          attributes: {
+            'openinference.span.kind': 'LLM',
+            'llm.model_name': modelResult.model,
+            'llm.provider': 'ollama',
+            ...(modelResult.promptTokens === undefined ? {} : { 'llm.token_count.prompt': modelResult.promptTokens }),
+            ...(modelResult.completionTokens === undefined ? {} : { 'llm.token_count.completion': modelResult.completionTokens }),
+          },
+          ...(agent.observability.captureOutputs ? { data: { output: modelResult.content } } : {}),
+        });
+      }
       const continued = await this.store.mutate((state) => {
         const run = state.runs.find((candidate) => candidate.id === runId);
         if (run === undefined || run.status === 'cancelled') {
           return false;
         }
-        run.costUsd = Number((run.costUsd + 0.0015).toFixed(4));
+        // Local inference has no provider charge; retain the preview charge for
+        // unconfigured/simulated providers until their adapters are implemented.
+        run.costUsd = Number((run.costUsd + (provider === 'ollama' ? 0 : 0.0015)).toFixed(4));
         return true;
       });
       await this.events.emit(runId, 'agent.cost', 'Agent cost recorded.', {
@@ -472,7 +498,7 @@ export class LocalWorkflowExecutor {
         spanKind: 'agent',
         attributes: {
           'metric.name': 'gen_ai.cost.usd',
-          'metric.value': 0.0015,
+          'metric.value': provider === 'ollama' ? 0 : 0.0015,
           'agent.id': agent.id,
           'agent.version': agent.version,
         },
@@ -482,7 +508,11 @@ export class LocalWorkflowExecutor {
         throw new Error('Run stopped during agent execution.');
       }
     }
-    return { iterations: maxIterations, outcome: 'bounded-completion' };
+    return {
+      iterations: maxIterations,
+      outcome: 'bounded-completion',
+      ...(lastModelOutput === undefined ? {} : { output: lastModelOutput }),
+    };
   }
 
   private async completeNode(

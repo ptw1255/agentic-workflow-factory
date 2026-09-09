@@ -36,6 +36,42 @@ Open <http://localhost:5173>. Vite proxies `/api` requests to the Fastify server
 port 3100. Without `DATABASE_URL`, runtime state is stored in `.data/state.json`.
 Without Vault configuration, credential writes are rejected rather than persisted.
 
+### Local Ollama models
+
+Agent boxes can execute local Ollama models without a hosted provider. Start Ollama
+on the host, pull a model, and declare it in YAML:
+
+```bash
+ollama pull llama3.2
+```
+
+```yaml
+model:
+  provider: ollama
+  model: llama3.2
+  # Optional; defaults to OLLAMA_BASE_URL or http://127.0.0.1:11434
+  endpoint: http://host.docker.internal:11434
+  provisioning:
+    mode: pull-on-start
+    # Optional digest pins the installed model manifest.
+    # digest: sha256:...
+```
+
+When the app runs in Docker Desktop, `host.docker.internal` reaches Ollama on the
+host. For a fully containerized setup, use the optional Compose service instead:
+
+```bash
+OLLAMA_BASE_URL=http://ollama:11434 docker compose --profile ollama up --build
+docker compose --profile ollama exec ollama ollama pull llama3.2
+```
+
+With `pull-on-start`, the app checks `/api/tags` during startup and pulls the model
+when it is missing. It retries provisioning on the first run if Ollama was not yet
+ready. `never` (the default) requires the model to already exist; `baked` is reserved
+for preloaded model volumes. The runtime records an `llm.completed` trace for each
+Ollama call and preserves the agent's declared input/output capture and network
+policies.
+
 Useful commands:
 
 ```bash

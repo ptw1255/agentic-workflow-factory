@@ -24,6 +24,13 @@ export const agentDefinitionSchema = z.object({
     provider: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     routingAlias: z.string().min(1).optional(),
+    endpoint: z.string().url().optional(),
+    secretRef: z.string().min(1).optional(),
+    provisioning: z.object({
+      mode: z.enum(['never', 'pull-on-start', 'baked']).default('never'),
+      digest: z.string().min(1).optional(),
+      timeoutMs: z.number().int().positive().max(3_600_000).optional(),
+    }).optional(),
   }),
   inputSchema: configSchema,
   outputSchema: configSchema,

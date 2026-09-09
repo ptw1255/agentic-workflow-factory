@@ -10,6 +10,9 @@ services:
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: dev-only-token
       OBSERVABILITY_RETENTION_HOURS: 48
+      # Ollama normally runs on the host during local development. Override with
+      # OLLAMA_BASE_URL=http://ollama:11434 when using the optional Compose service.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       # Set PHOENIX_ENDPOINT=http://phoenix:6006 when enabling the observability profile.
       PHOENIX_ENDPOINT: ${PHOENIX_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -26,6 +29,8 @@ services:
       retries: 5
     volumes:
       - app_data:/app/.data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   postgres:
     image: postgres:16-alpine
@@ -70,7 +75,17 @@ services:
       - phoenix_data:/root/.phoenix
     restart: unless-stopped
 
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
 volumes:
   app_data:
   postgres_data:
   phoenix_data:
+  ollama_data:

@@ -29,6 +29,7 @@ import { EventService } from '../observability/event-service.js';
 import { parseProjectYaml, stringifyProjectYaml } from '../declarative/yaml.js';
 import { CompositeTelemetryExporter, OtlpHttpExporter } from '../observability/otlp-exporter.js';
 import { LocalWorkflowExecutor } from '../runtime/executor.js';
+import { HttpOllamaClient } from '../runtime/ollama.js';
 import { JsonStore } from '../storage/json-store.js';
 import { PostgresStore } from '../storage/postgres-store.js';
 import { DEFAULT_PROJECT_ID, DEFAULT_TENANT_ID, type PlatformStore } from '../storage/store.js';
@@ -110,7 +111,12 @@ export async function createApp(
     ?? positiveNumber(process.env.OBSERVABILITY_RETENTION_HOURS, 48);
   const exporter = telemetryExporter();
   const events = new EventService(store, { retentionHours, exporter });
-  const executor = new LocalWorkflowExecutor(store, events);
+  const ollama = new HttpOllamaClient();
+  const executor = new LocalWorkflowExecutor(store, events, ollama);
+  const ollamaAgents = await store.read((state) => state.workflows.flatMap((workflow) => workflow.agents));
+  if (ollamaAgents.some((agent) => agent.model.provider?.toLowerCase() === 'ollama' && agent.model.provisioning?.mode === 'pull-on-start')) {
+    void ollama.provision(ollamaAgents).catch((error: unknown) => app.log.warn({ error }, 'Ollama model provisioning did not complete; execution will retry on demand.'));
+  }
   const connections = new ConnectionService(store, secretBroker);
   const proposals = new ProposalService(store);
   if (store.close !== undefined) {
