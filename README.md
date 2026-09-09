@@ -72,6 +72,20 @@ for preloaded model volumes. The runtime records an `llm.completed` trace for ea
 Ollama call and preserves the agent's declared input/output capture and network
 policies.
 
+### Local repository checks
+
+Set `REPOSITORY_WORKSPACE` to expose the bounded repository API. Only `npm test`,
+`npm run typecheck`, and `npm run build` can execute; arbitrary commands and paths
+outside the configured root are rejected:
+
+```bash
+REPOSITORY_WORKSPACE=/path/to/repository npm run server
+```
+
+Use `GET /api/repository` to inspect the workspace and `POST /api/repository/check`
+with `{ "command": "npm test" }` to receive exit code, duration, timeout state, and
+truncated output evidence.
+
 Useful commands:
 
 ```bash

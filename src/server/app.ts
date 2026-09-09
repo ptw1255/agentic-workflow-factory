@@ -30,6 +30,7 @@ import { parseProjectYaml, stringifyProjectYaml } from '../declarative/yaml.js';
 import { CompositeTelemetryExporter, OtlpHttpExporter } from '../observability/otlp-exporter.js';
 import { LocalWorkflowExecutor } from '../runtime/executor.js';
 import { HttpOllamaClient } from '../runtime/ollama.js';
+import { RepositoryWorkspace } from '../repository/workspace.js';
 import { JsonStore } from '../storage/json-store.js';
 import { PostgresStore } from '../storage/postgres-store.js';
 import { DEFAULT_PROJECT_ID, DEFAULT_TENANT_ID, type PlatformStore } from '../storage/store.js';
@@ -113,6 +114,9 @@ export async function createApp(
   const events = new EventService(store, { retentionHours, exporter });
   const ollama = new HttpOllamaClient();
   const executor = new LocalWorkflowExecutor(store, events, ollama);
+  const repositoryWorkspace = process.env.REPOSITORY_WORKSPACE === undefined
+    ? undefined
+    : await RepositoryWorkspace.open(process.env.REPOSITORY_WORKSPACE);
   const ollamaAgents = await store.read((state) => state.workflows.flatMap((workflow) => workflow.agents));
   if (ollamaAgents.some((agent) => agent.model.provider?.toLowerCase() === 'ollama' && agent.model.provisioning?.mode === 'pull-on-start')) {
     void ollama.provision(ollamaAgents).catch((error: unknown) => app.log.warn({ error }, 'Ollama model provisioning did not complete; execution will retry on demand.'));
@@ -147,6 +151,19 @@ export async function createApp(
     },
     timestamp: new Date().toISOString(),
   }));
+
+  app.get('/api/repository', async (_request, reply) => {
+    if (repositoryWorkspace === undefined) return reply.status(404).send({ message: 'Repository workspace is not configured.' });
+    return { path: repositoryWorkspace.path, entries: await repositoryWorkspace.list() };
+  });
+
+  app.post<{ Body: unknown }>('/api/repository/check', async (request, reply) => {
+    if (repositoryWorkspace === undefined) return reply.status(404).send({ message: 'Repository workspace is not configured.' });
+    const body = request.body as { command?: unknown; timeoutMs?: unknown };
+    if (typeof body?.command !== 'string') return reply.status(422).send({ message: 'A supported check command is required.' });
+    const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined;
+    return repositoryWorkspace.runCheck(body.command, timeoutMs);
+  });
 
   app.get('/api/catalog/nodes', async () => ({ items: nodeCatalog }));
 
