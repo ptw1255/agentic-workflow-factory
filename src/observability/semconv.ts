@@ -1,6 +1,6 @@
 /** Small, dependency-free semantic-convention surface shared by local and Temporal runtimes.
  * These keys intentionally follow OpenTelemetry and OpenInference naming so the
- * persisted event stream can be exported to an OTLP-compatible backend later.
+ * persisted event stream can be exported to an OTLP-compatible backend.
  */
 export const telemetryAttributes = {
   serviceName: 'service.name',

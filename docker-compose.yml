@@ -9,6 +9,10 @@ services:
       DATABASE_URL: postgresql://factory:factory@postgres:5432/factory
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: dev-only-token
+      OBSERVABILITY_RETENTION_HOURS: 48
+      # Set PHOENIX_ENDPOINT=http://phoenix:6006 when enabling the observability profile.
+      PHOENIX_ENDPOINT: ${PHOENIX_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,6 +56,21 @@ services:
       timeout: 5s
       retries: 10
 
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    profiles: ["observability"]
+    environment:
+      # Phoenix retention is expressed in days; two days matches the factory's 48-hour policy.
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: 2
+      PHOENIX_ALLOW_EXTERNAL_RESOURCES: "false"
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+    volumes:
+      - phoenix_data:/root/.phoenix
+    restart: unless-stopped
+
 volumes:
   app_data:
   postgres_data:
+  phoenix_data:

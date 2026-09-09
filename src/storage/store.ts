@@ -9,6 +9,8 @@ export interface PlatformStore {
   mutate<T>(mutation: StateMutation<T>): Promise<T>;
   appendEvent(event: RunEvent): Promise<void>;
   listEvents(runId?: string): Promise<RunEvent[]>;
+  /** Remove observability records older than the configured retention window. */
+  pruneEvents?(before: string): Promise<number>;
   close?(): Promise<void>;
 }
 

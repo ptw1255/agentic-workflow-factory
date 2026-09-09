@@ -102,6 +102,15 @@ export class PostgresStore implements PlatformStore {
     return result.rows.map((row) => row.event);
   }
 
+  public async pruneEvents(before: string): Promise<number> {
+    await this.ensureInitialized();
+    const result = await this.pool.query(
+      'DELETE FROM observability_events WHERE timestamp < $1::timestamptz',
+      [before],
+    );
+    return result.rowCount ?? 0;
+  }
+
   public async close(): Promise<void> {
     await this.pool.end();
   }

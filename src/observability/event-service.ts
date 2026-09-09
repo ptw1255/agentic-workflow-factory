@@ -2,10 +2,21 @@ import { randomUUID } from 'node:crypto';
 
 import type { AgentSpanKind, RunEvent } from '../domain/types.js';
 import type { PlatformStore } from '../storage/store.js';
+import type { TelemetryExporter } from './otlp-exporter.js';
 import { telemetryResource } from './semconv.js';
 
 export class EventService {
-  public constructor(private readonly store: PlatformStore) {}
+  private readonly retentionHours: number;
+
+  public constructor(
+    private readonly store: PlatformStore,
+    options: { retentionHours?: number; exporter?: TelemetryExporter } = {},
+  ) {
+    this.retentionHours = options.retentionHours ?? 48;
+    this.exporter = options.exporter;
+  }
+
+  private readonly exporter: TelemetryExporter | undefined;
 
   public async emit(
     runId: string,
@@ -42,10 +53,30 @@ export class EventService {
     };
 
     await this.store.appendEvent(event);
+    if (this.exporter !== undefined) {
+      void this.exporter.export(event);
+    }
     return event;
   }
 
   public list(runId?: string): Promise<RunEvent[]> {
     return this.store.listEvents(runId);
+  }
+
+  public prune(): Promise<number> {
+    if (this.store.pruneEvents === undefined) return Promise.resolve(0);
+    const before = new Date(Date.now() - this.retentionHours * 60 * 60 * 1000).toISOString();
+    return this.store.listEvents().then(async (events) => {
+      const traceIds = [...new Set(events
+        .filter((event) => event.timestamp < before)
+        .map((event) => event.traceId))];
+      const deleted = await this.store.pruneEvents!(before);
+      await this.exporter?.prune?.(traceIds);
+      return deleted;
+    });
+  }
+
+  public close(): Promise<void> {
+    return this.exporter?.close?.() ?? Promise.resolve();
   }
 }

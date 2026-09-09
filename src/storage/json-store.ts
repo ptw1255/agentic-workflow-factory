@@ -42,6 +42,14 @@ export class JsonStore implements PlatformStore {
     });
   }
 
+  public async pruneEvents(before: string): Promise<number> {
+    return this.mutate((state) => {
+      const originalLength = state.events.length;
+      state.events = state.events.filter((event) => event.timestamp >= before);
+      return originalLength - state.events.length;
+    });
+  }
+
   public listEvents(runId?: string): Promise<RunEvent[]> {
     return this.read((state) =>
       state.events

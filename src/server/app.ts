@@ -21,6 +21,7 @@ import { validateWorkflow } from '../domain/validator.js';
 import { defaultFactoryManifest } from '../factory/manifest.js';
 import { calculateFactoryMetrics } from '../factory/metrics.js';
 import { EventService } from '../observability/event-service.js';
+import { CompositeTelemetryExporter, OtlpHttpExporter } from '../observability/otlp-exporter.js';
 import { LocalWorkflowExecutor } from '../runtime/executor.js';
 import { JsonStore } from '../storage/json-store.js';
 import { PostgresStore } from '../storage/postgres-store.js';
@@ -33,10 +34,36 @@ export interface AppOptions {
   secretBroker?: import('../connections/secret-broker.js').SecretBroker;
   logger?: boolean;
   serveStatic?: boolean;
+  observabilityRetentionHours?: number;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unexpected platform error.';
+}
+
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = value === undefined ? Number.NaN : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function telemetryExporter(): CompositeTelemetryExporter | undefined {
+  const exporters = [];
+  const configuredPhoenixEndpoint = process.env.PHOENIX_ENDPOINT ?? process.env.PHOENIX_COLLECTOR_ENDPOINT;
+  const phoenixEndpoint = configuredPhoenixEndpoint?.trim() || undefined;
+  const phoenixApiKey = process.env.PHOENIX_API_KEY;
+  if (phoenixEndpoint !== undefined) {
+    exporters.push(new OtlpHttpExporter(
+      phoenixEndpoint,
+      phoenixApiKey === undefined ? {} : { api_key: phoenixApiKey },
+      { deleteTraces: true, signals: ['trace'] },
+    ));
+  }
+  const configuredOtlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  const otlpEndpoint = configuredOtlpEndpoint?.trim() || undefined;
+  if (otlpEndpoint !== undefined && otlpEndpoint !== phoenixEndpoint) {
+    exporters.push(new OtlpHttpExporter(otlpEndpoint));
+  }
+  return exporters.length === 0 ? undefined : new CompositeTelemetryExporter(exporters);
 }
 
 export async function createApp(
@@ -58,13 +85,22 @@ export async function createApp(
       ? new VaultSecretBroker({ address: vaultAddress, token: vaultToken })
       : undefined
   );
-  const events = new EventService(store);
+  const retentionHours = options.observabilityRetentionHours
+    ?? positiveNumber(process.env.OBSERVABILITY_RETENTION_HOURS, 48);
+  const exporter = telemetryExporter();
+  const events = new EventService(store, { retentionHours, exporter });
   const executor = new LocalWorkflowExecutor(store, events);
   const connections = new ConnectionService(store, secretBroker);
   const proposals = new ProposalService(store);
   if (store.close !== undefined) {
     app.addHook('onClose', async () => store.close?.());
   }
+  const retentionTimer = setInterval(() => void events.prune(), 15 * 60 * 1000);
+  retentionTimer.unref?.();
+  app.addHook('onClose', async () => {
+    clearInterval(retentionTimer);
+    await events.close();
+  });
 
   app.setErrorHandler((error: FastifyError, _request, reply) => {
     const statusCode = error.validation === undefined ? 400 : 422;
@@ -78,6 +114,10 @@ export async function createApp(
     status: 'ok',
     executionEngine: 'local-durable-preview',
     storage: databaseUrl === undefined ? 'json' : 'postgresql',
+    observability: {
+      retentionHours,
+      otlpExportEnabled: exporter !== undefined,
+    },
     timestamp: new Date().toISOString(),
   }));
 
@@ -345,6 +385,7 @@ export async function createApp(
     });
   }
 
+  await events.prune();
   await executor.recover();
   return app;
 }

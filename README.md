@@ -66,7 +66,32 @@ development and must not be used with production credentials.
 
 PostgreSQL stores workflow and run control-plane state in `platform_state` and keeps
 runtime logs, traces, and metrics in the indexed `observability_events` table. Legacy
-JSON state events are moved into that table automatically on first startup.
+JSON state events are moved into that table automatically on first startup. Runtime
+observability retention is 48 hours by default; a cleanup pass runs at startup and
+every 15 minutes and removes older records.
+
+### Phoenix traces (optional)
+
+Phoenix is an optional local trace UI and OTLP receiver. The factory exports trace
+events to Phoenix and can also fan out logs and metrics to any OTLP/HTTP endpoint.
+Phoenix traces are deleted by the same 48-hour cleanup pass through Phoenix's trace
+API; Phoenix is configured with a two-day default retention policy as a second safety
+net. Phoenix's own scheduled policy cleanup can be less frequent, so keep the
+factory cleanup process running when a strict 48-hour boundary matters.
+
+Start the optional Phoenix container with Docker Desktop:
+
+```bash
+PHOENIX_ENDPOINT=http://phoenix:6006 \
+  docker compose --profile observability up --build
+```
+
+Then open <http://localhost:6006>. To export all three signals to another OTLP/HTTP
+backend, set `OTEL_EXPORTER_OTLP_ENDPOINT` as well. The app accepts
+`OBSERVABILITY_RETENTION_HOURS` (default `48`), but deployments should keep it at
+48 hours when the product's short-retention policy is required. An external OTLP
+backend must also be configured with its own 48-hour TTL; the factory cannot delete
+records from arbitrary third-party storage.
 
 `npm run check` runs type checking, tests, and the production web build.
 
