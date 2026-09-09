@@ -32,6 +32,7 @@ import { CompositeTelemetryExporter, OtlpHttpExporter } from '../observability/o
 import { LocalWorkflowExecutor } from '../runtime/executor.js';
 import { HttpOllamaClient } from '../runtime/ollama.js';
 import { RepositoryWorkspace } from '../repository/workspace.js';
+import { GitHubRepositoryClient } from '../repository/github.js';
 import { JsonStore } from '../storage/json-store.js';
 import { PostgresStore } from '../storage/postgres-store.js';
 import { DEFAULT_PROJECT_ID, DEFAULT_TENANT_ID, type PlatformStore } from '../storage/store.js';
@@ -118,6 +119,9 @@ export async function createApp(
   const repositoryWorkspace = process.env.REPOSITORY_WORKSPACE === undefined
     ? undefined
     : await RepositoryWorkspace.open(process.env.REPOSITORY_WORKSPACE);
+  const githubRepository = process.env.GITHUB_TOKEN !== undefined && process.env.GITHUB_REPOSITORY_OWNER !== undefined && process.env.GITHUB_REPOSITORY_NAME !== undefined
+    ? new GitHubRepositoryClient({ token: process.env.GITHUB_TOKEN, owner: process.env.GITHUB_REPOSITORY_OWNER, repo: process.env.GITHUB_REPOSITORY_NAME })
+    : undefined;
   const ollamaAgents = await store.read((state) => state.workflows.flatMap((workflow) => workflow.agents));
   if (ollamaAgents.some((agent) => agent.model.provider?.toLowerCase() === 'ollama' && agent.model.provisioning?.mode === 'pull-on-start')) {
     void ollama.provision(ollamaAgents).catch((error: unknown) => app.log.warn({ error }, 'Ollama model provisioning did not complete; execution will retry on demand.'));
@@ -164,6 +168,18 @@ export async function createApp(
     if (typeof body?.command !== 'string') return reply.status(422).send({ message: 'A supported check command is required.' });
     const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined;
     return repositoryWorkspace.runCheck(body.command, timeoutMs);
+  });
+
+  app.get('/api/repository/patch', async (_request, reply) => {
+    if (repositoryWorkspace === undefined) return reply.status(404).send({ message: 'Repository workspace is not configured.' });
+    return repositoryWorkspace.patchArtifact();
+  });
+
+  app.post<{ Body: unknown }>('/api/repository/pull-request', async (request, reply) => {
+    if (repositoryWorkspace === undefined || githubRepository === undefined) return reply.status(404).send({ message: 'Repository and GitHub integration are not configured.' });
+    const body = request.body as { title?: unknown; body?: unknown; head?: unknown; base?: unknown };
+    if (![body?.title, body?.body, body?.head, body?.base].every((value) => typeof value === 'string' && value.trim() !== '')) return reply.status(422).send({ message: 'title, body, head, and base are required.' });
+    return githubRepository.createPullRequest({ title: body.title as string, body: body.body as string, head: body.head as string, base: body.base as string });
   });
 
   app.get('/api/catalog/nodes', async () => ({ items: nodeCatalog }));

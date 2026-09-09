@@ -86,6 +86,12 @@ Use `GET /api/repository` to inspect the workspace and `POST /api/repository/che
 with `{ "command": "npm test" }` to receive exit code, duration, timeout state, and
 truncated output evidence.
 
+If GitHub integration is configured with `GITHUB_TOKEN`,
+`GITHUB_REPOSITORY_OWNER`, and `GITHUB_REPOSITORY_NAME`, the bounded
+`POST /api/repository/pull-request` endpoint can open a reviewable PR from an
+already-created branch. The token is used only in the Authorization header and is
+never included in request payloads or telemetry.
+
 Useful commands:
 
 ```bash
