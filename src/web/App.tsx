@@ -49,9 +49,9 @@ const TENANT_STORAGE_KEY = 'factory.tenantId';
 const PROJECT_STORAGE_KEY = 'factory.projectId';
 
 const nodeTypes = { workflow: WorkflowNodeCard };
-const viewLabels: Record<ViewId, { label: string; icon: IconName }> = {
+const viewLabels: Record<Exclude<ViewId, 'runs'>, { label: string; icon: IconName }> = {
   studio: { label: 'Studio', icon: 'studio' },
-  runs: { label: 'Observe', icon: 'runs' },
+  observe: { label: 'Observe', icon: 'runs' },
   connections: { label: 'Connections', icon: 'connections' },
   proposals: { label: 'Agent Proposals', icon: 'agent' },
   factory: { label: 'Factory', icon: 'factory' },
@@ -59,6 +59,7 @@ const viewLabels: Record<ViewId, { label: string; icon: IconName }> = {
 
 function readView(): ViewId {
   const value = window.location.hash.replace('#/', '');
+  if (value === 'runs') return 'observe';
   return value in viewLabels ? (value as ViewId) : 'studio';
 }
 
@@ -305,7 +306,7 @@ export function App() {
         />
         <nav aria-label="Primary navigation">
           <span className="nav-section-label">Build & operate</span>
-          {(Object.entries(viewLabels) as Array<[ViewId, (typeof viewLabels)[ViewId]]>).map(
+          {(Object.entries(viewLabels) as Array<[Exclude<ViewId, 'runs'>, (typeof viewLabels)[Exclude<ViewId, 'runs'>]]>).map(
             ([id, item]) => (
               <button
                 aria-current={view === id ? 'page' : undefined}
@@ -346,7 +347,7 @@ export function App() {
           <span className="system-dot" />
         </div>
         {view === 'studio' ? <StudioView key={projectId} onNavigate={setView} projectId={projectId} /> : null}
-        {view === 'runs' ? <RunsView key={projectId} /> : null}
+        {view === 'observe' ? <RunsView key={projectId} /> : null}
         {view === 'connections' ? <ConnectionsView key={projectId} /> : null}
         {view === 'proposals' ? <ProposalsView key={projectId} onOpenStudio={() => setView('studio')} /> : null}
         {view === 'factory' ? <FactoryView key={projectId} onNavigate={setView} /> : null}
@@ -764,7 +765,7 @@ function StudioView({ onNavigate, projectId }: { onNavigate: (view: ViewId) => v
       window.localStorage.setItem(`factory.onboarding.${projectId}.run`, 'true');
       setHasRun(true);
       sessionStorage.setItem('selectedRunId', run.id);
-      onNavigate('runs');
+      onNavigate('observe');
     } catch (runError) {
       setNotice({ tone: 'error', text: errorText(runError) });
     } finally {
@@ -1585,9 +1586,9 @@ function FactoryView({ onNavigate }: { onNavigate: (view: ViewId) => void }) {
           )}
         </section>
         <section className="recent-panel">
-          <div className="section-heading"><div><span className="eyebrow">Latest activity</span><h2>Recent runs</h2></div><button className="text-button" onClick={() => onNavigate('runs')} type="button">View all <Icon name="chevron" /></button></div>
+          <div className="section-heading"><div><span className="eyebrow">Latest activity</span><h2>Recent runs</h2></div><button className="text-button" onClick={() => onNavigate('observe')} type="button">View all <Icon name="chevron" /></button></div>
           {recentRuns.length === 0 ? <EmptyState icon="runs" title="Factory is ready" message="Start a workflow to see activity." /> : (
-            <div className="recent-runs">{recentRuns.map((run) => <button key={run.id} onClick={() => { sessionStorage.setItem('selectedRunId', run.id); onNavigate('runs'); }} type="button"><span className={`run-state-dot status-${run.status}`} /><span><strong>{run.workflowName}</strong><small>{formatDate(run.startedAt)}</small></span><StatusBadge status={run.status} /></button>)}</div>
+            <div className="recent-runs">{recentRuns.map((run) => <button key={run.id} onClick={() => { sessionStorage.setItem('selectedRunId', run.id); onNavigate('observe'); }} type="button"><span className={`run-state-dot status-${run.status}`} /><span><strong>{run.workflowName}</strong><small>{formatDate(run.startedAt)}</small></span><StatusBadge status={run.status} /></button>)}</div>
           )}
         </section>
       </div>
