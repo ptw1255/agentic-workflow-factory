@@ -1073,6 +1073,7 @@ function OperationalTree({
   const [error, setError] = useState<string | null>(null);
   const [files, setFiles] = useState<ProjectFileRecord[]>([]);
   const [selectedPath, setSelectedPath] = useState('project.yaml');
+  const [fileSearch, setFileSearch] = useState('');
 
   useEffect(() => {
     void api.projectFiles(projectId).then((response) => {
@@ -1111,9 +1112,10 @@ function OperationalTree({
       <aside className="ide-explorer">
         <div className="ide-explorer-title"><span className="eyebrow">Explorer</span><Icon name="search" size={14} /></div>
         <label className="ide-view-selector"><span>View</span><select aria-label="Workspace view" onChange={(event) => onModeChange(event.target.value as 'files' | 'tree' | 'canvas')} value={mode}><option value="files">Files</option><option value="tree">Tree</option><option value="canvas">Canvas</option></select></label>
+        <label className="ide-file-search"><span className="sr-only">Filter files</span><input onChange={(event) => setFileSearch(event.target.value)} placeholder="Filter files" type="search" value={fileSearch} /></label>
         <div className="ide-project"><Icon name="factory" size={15} /><strong>{workflow.projectId ?? 'project'}</strong></div>
         <div className="ide-folder"><Icon name="chevron" size={12} /> workflows</div>
-        {(files.length > 0 ? files : [{ path: 'project.yaml', sha256: '', projectId, tenantId: '', updatedAt: '' }]).map((file) => <button className={`ide-file ${selectedPath === file.path ? 'active' : ''}`} key={file.path} onClick={() => void selectFile(file)} type="button"><Icon name={file.path.includes('agent') ? 'agent' : 'code'} size={14} /> {file.path}</button>)}
+        {(files.length > 0 ? files : [{ path: 'project.yaml', sha256: '', projectId, tenantId: '', updatedAt: '' }]).filter((file) => file.path.toLowerCase().includes(fileSearch.toLowerCase())).map((file) => <button className={`ide-file ${selectedPath === file.path ? 'active' : ''}`} key={file.path} onClick={() => void selectFile(file)} type="button"><Icon name={file.path.includes('agent') ? 'agent' : 'code'} size={14} /> {file.path}</button>)}
         {files.length === 0 ? workflow.agents.map((agent) => <div className="ide-file muted" key={agent.id}><Icon name="agent" size={14} /> agents/{agent.id}.agent.yaml</div>) : null}
         <div className="ide-folder"><Icon name="chevron" size={12} /> runtime</div>
         <div className="ide-file muted"><Icon name="runs" size={14} /> runs</div>

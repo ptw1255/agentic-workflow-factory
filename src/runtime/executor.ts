@@ -62,7 +62,7 @@ export class LocalWorkflowExecutor {
     return runIds.length;
   }
 
-  public async start(workflow: WorkflowDefinition): Promise<RunRecord> {
+  public async start(workflow: WorkflowDefinition, options: { artifactId?: string } = {}): Promise<RunRecord> {
     const validation = validateWorkflow(workflow);
     if (!validation.valid) {
       const message = validation.issues
@@ -86,6 +86,7 @@ export class LocalWorkflowExecutor {
       workflowId: workflow.id,
       workflowName: workflow.name,
       workflowVersion: workflow.version,
+      ...(options.artifactId === undefined ? {} : { artifactId: options.artifactId }),
       traceId: randomUUID().replaceAll('-', '').slice(0, 32),
       status: 'queued',
       startedAt: now,

@@ -351,6 +351,24 @@ export async function createApp(
     },
   );
 
+  app.patch<{ Params: { projectId: string }; Body: unknown }>('/api/projects/:projectId/files', async (request, reply) => {
+    const scope = scopeFromRequest(request);
+    const body = request.body as { path?: unknown; newPath?: unknown };
+    if (typeof body?.path !== 'string' || typeof body.newPath !== 'string' || body.path.includes('..') || body.newPath.includes('..') || body.newPath.trim() === '') return reply.status(422).send({ message: 'path and newPath are required; traversal is not allowed.' });
+    const oldPath = body.path;
+    const newPath = body.newPath;
+    const renamed = await store.mutate((state) => {
+      const file = state.files.find((candidate) => candidate.projectId === request.params.projectId && candidate.tenantId === scope.tenantId && candidate.path === oldPath);
+      if (file === undefined) return false;
+      if (state.files.some((candidate) => candidate.projectId === request.params.projectId && candidate.tenantId === scope.tenantId && candidate.path === newPath)) throw new Error('A file already exists at the destination path.');
+      file.path = newPath;
+      file.updatedAt = new Date().toISOString();
+      return true;
+    });
+    if (!renamed) return reply.status(404).send({ message: 'Project file not found.' });
+    return { renamed: true, path: oldPath, newPath };
+  });
+
   app.delete<{ Params: { projectId: string }; Body: unknown }>(
     '/api/projects/:projectId/files',
     async (request, reply) => {
@@ -529,14 +547,20 @@ export async function createApp(
     '/api/workflows/:id/runs',
     async (request, reply) => {
       const scope = scopeFromRequest(request);
-      const workflow = await store.read((state) =>
-        state.workflows.find((candidate) => candidate.id === request.params.id && inScope(candidate, scope)),
-      );
+      const body = request.body as { artifactId?: unknown };
+      const selected = await store.read((state) => {
+        const artifactId = typeof body?.artifactId === 'string' ? body.artifactId : undefined;
+        const artifact = artifactId === undefined ? undefined : state.artifacts.find((candidate) => candidate.id === artifactId && inScope(candidate, scope));
+        const workflow = state.workflows.find((candidate) => candidate.id === request.params.id && inScope(candidate, scope));
+        const pinned = artifact?.workflows.find((candidate) => candidate.id === request.params.id);
+        return { workflow: pinned ?? workflow, artifactId: artifact?.id };
+      });
+      const workflow = selected.workflow;
       if (workflow === undefined) {
         return reply.status(404).send({ message: 'Workflow not found.' });
       }
       try {
-        return await executor.start(workflow);
+        return await executor.start(workflow, selected.artifactId === undefined ? {} : { artifactId: selected.artifactId });
       } catch (error) {
         return reply.status(422).send({ message: errorMessage(error) });
       }
