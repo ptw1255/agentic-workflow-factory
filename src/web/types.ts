@@ -1,4 +1,4 @@
-export type ViewId = 'studio' | 'runs' | 'connections' | 'proposals' | 'factory';
+export type ViewId = 'studio' | 'observe' | 'runs' | 'connections' | 'proposals' | 'factory';
 export type WorkflowStatus = 'draft' | 'deployed';
 export type RunStatus =
   | 'queued'
