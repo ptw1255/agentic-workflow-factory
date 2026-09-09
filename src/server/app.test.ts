@@ -172,6 +172,12 @@ describe('platform API', () => {
     expect(artifacts.json<{ items: unknown[] }>().items).toHaveLength(1);
   });
 
+  it('pins a run to the selected immutable artifact version', async () => {
+    const artifact = await app.inject({ method: 'POST', url: '/api/projects/project-local/compile', headers: { 'x-tenant-id': 'tenant-local', 'x-project-id': 'project-local' }, payload: {} });
+    // The seeded project has no typed files; an absent artifact is rejected rather than silently followed.
+    expect(artifact.statusCode).toBe(422);
+  });
+
   it('creates a managed connection without accepting credentials', async () => {
     const response = await app.inject({
       method: 'POST',

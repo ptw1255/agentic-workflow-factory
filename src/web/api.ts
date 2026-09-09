@@ -75,6 +75,7 @@ export const api = {
   projectFiles: (projectId: string) => request<ItemsResponse<ProjectFileRecord>>(`/api/projects/${encodeURIComponent(projectId)}/files`),
   projectFile: (projectId: string, filePath: string) => request<ProjectFileRecord>(`/api/projects/${encodeURIComponent(projectId)}/files?path=${encodeURIComponent(filePath)}`),
   saveProjectFile: (projectId: string, filePath: string, content: string) => request<ProjectFileRecord>(`/api/projects/${encodeURIComponent(projectId)}/files`, { method: 'PUT', body: JSON.stringify({ path: filePath, content }) }),
+  renameProjectFile: (projectId: string, filePath: string, newPath: string) => request<{ renamed: boolean }>(`/api/projects/${encodeURIComponent(projectId)}/files`, { method: 'PATCH', body: JSON.stringify({ path: filePath, newPath }) }),
   catalog: () => request<ItemsResponse<NodeCatalogItem>>('/api/catalog/nodes'),
   workflows: () => request<ItemsResponse<WorkflowDefinition>>('/api/workflows'),
   workflow: (id: string) =>
