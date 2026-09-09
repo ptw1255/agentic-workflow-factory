@@ -62,7 +62,13 @@ describe('JsonStore', () => {
     const store = new JsonStore(file);
     const versions = await store.read((loaded) => loaded.workflowVersions);
 
-    expect(versions).toEqual([{ id: 'workflow-1', version: 3, agents: [] }]);
+    expect(versions).toEqual([{
+      id: 'workflow-1',
+      version: 3,
+      agents: [],
+      tenantId: 'tenant-local',
+      projectId: 'project-local',
+    }]);
   });
 
   it('supports the shared observability persistence contract', async () => {

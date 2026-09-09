@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import fastifyStatic from '@fastify/static';
@@ -12,8 +13,11 @@ import { ConnectionService } from '../connections/connection-service.js';
 import { VaultSecretBroker } from '../connections/vault-secret-broker.js';
 import { nodeCatalog } from '../domain/catalog.js';
 import {
+  createProjectSchema,
+  cloneWorkflowSchema,
   createConnectionSchema,
   createProposalSchema,
+  createTenantSchema,
   workflowDefinitionSchema,
 } from '../domain/schema.js';
 import type { WorkflowDefinition } from '../domain/types.js';
@@ -25,7 +29,7 @@ import { CompositeTelemetryExporter, OtlpHttpExporter } from '../observability/o
 import { LocalWorkflowExecutor } from '../runtime/executor.js';
 import { JsonStore } from '../storage/json-store.js';
 import { PostgresStore } from '../storage/postgres-store.js';
-import type { PlatformStore } from '../storage/store.js';
+import { DEFAULT_PROJECT_ID, DEFAULT_TENANT_ID, type PlatformStore } from '../storage/store.js';
 
 export interface AppOptions {
   dataFile?: string;
@@ -39,6 +43,21 @@ export interface AppOptions {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unexpected platform error.';
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function scopeFromRequest(request: { headers: Record<string, string | string[] | undefined> }) {
+  return {
+    tenantId: headerValue(request.headers['x-tenant-id']) ?? DEFAULT_TENANT_ID,
+    projectId: headerValue(request.headers['x-project-id']) ?? DEFAULT_PROJECT_ID,
+  };
+}
+
+function inScope(value: { tenantId?: string; projectId?: string }, scope: { tenantId: string; projectId: string }): boolean {
+  return value.tenantId === scope.tenantId && value.projectId === scope.projectId;
 }
 
 function positiveNumber(value: string | undefined, fallback: number): number {
@@ -123,13 +142,106 @@ export async function createApp(
 
   app.get('/api/catalog/nodes', async () => ({ items: nodeCatalog }));
 
-  app.get('/api/workflows', async () => ({
-    items: await store.read((state) => state.workflows),
+  app.get('/api/tenants', async () => ({
+    items: await store.read((state) => state.tenants),
   }));
 
+  app.post<{ Body: unknown }>('/api/tenants', async (request, reply) => {
+    const parsed = createTenantSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(422).send({ message: 'Tenant metadata is invalid.', issues: parsed.error.issues });
+    }
+    const tenant = {
+      id: `tenant-${randomUUID()}`,
+      name: parsed.data.name,
+      createdAt: new Date().toISOString(),
+    };
+    await store.mutate((state) => {
+      state.tenants.push(tenant);
+    });
+    return tenant;
+  });
+
+  app.get('/api/projects', async (request) => {
+    const { tenantId } = scopeFromRequest(request);
+    return { items: await store.read((state) => state.projects.filter((project) => project.tenantId === tenantId)) };
+  });
+
+  app.post<{ Body: unknown }>('/api/projects', async (request, reply) => {
+    const parsed = createProjectSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(422).send({ message: 'Project metadata is invalid.', issues: parsed.error.issues });
+    }
+    const scope = scopeFromRequest(request);
+    const tenantId = parsed.data.tenantId ?? scope.tenantId;
+    const project = {
+      id: `project-${randomUUID()}`,
+      tenantId,
+      name: parsed.data.name,
+      description: parsed.data.description,
+      createdAt: new Date().toISOString(),
+    };
+    const exists = await store.read((state) => state.tenants.some((tenant) => tenant.id === tenantId));
+    if (!exists) return reply.status(404).send({ message: 'Tenant not found.' });
+    await store.mutate((state) => {
+      state.projects.push(project);
+    });
+    return project;
+  });
+
+  app.post<{ Params: { projectId: string }; Body: unknown }>(
+    '/api/projects/:projectId/workflows',
+    async (request, reply) => {
+      const parsed = cloneWorkflowSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(422).send({ message: 'Workflow clone request is invalid.', issues: parsed.error.issues });
+      }
+      const scope = scopeFromRequest(request);
+      let cloned: WorkflowDefinition;
+      try {
+        cloned = await store.mutate((state) => {
+        const project = state.projects.find((candidate) =>
+          candidate.id === request.params.projectId && candidate.tenantId === scope.tenantId,
+        );
+        if (project === undefined) throw new Error('Project not found.');
+        const source = state.workflows.find((candidate) =>
+          candidate.id === parsed.data.sourceWorkflowId && inScope(candidate, scope),
+        );
+        if (source === undefined) throw new Error('Source workflow not found.');
+        const now = new Date().toISOString();
+        const workflow: WorkflowDefinition = {
+          ...structuredClone(source),
+          tenantId: scope.tenantId,
+          projectId: project.id,
+          id: `workflow-${randomUUID()}`,
+          name: parsed.data.name ?? `${source.name} copy`,
+          version: 1,
+          status: 'draft',
+          createdAt: now,
+          updatedAt: now,
+        };
+        state.workflows.push(workflow);
+        state.workflowVersions.push(structuredClone(workflow));
+        return workflow;
+        });
+      } catch (error) {
+        return reply.status(404).send({ message: errorMessage(error) });
+      }
+      return cloned;
+    },
+  );
+
+  app.get('/api/workflows', async (request) => {
+    const scope = scopeFromRequest(request);
+    return {
+      items: await store.read((state) => state.workflows.filter((workflow) => inScope(workflow, scope))),
+    };
+  });
+
   app.get<{ Params: { id: string } }>('/api/workflows/:id', async (request, reply) => {
+    const scope = scopeFromRequest(request);
     const workflow = await store.read((state) =>
-      state.workflows.find((candidate) => candidate.id === request.params.id),
+      state.workflows.find((candidate) => candidate.id === request.params.id && inScope(candidate, scope)),
     );
     if (workflow === undefined) {
       return reply.status(404).send({ message: 'Workflow not found.' });
@@ -140,15 +252,16 @@ export async function createApp(
   app.get<{ Params: { id: string } }>(
     '/api/workflows/:id/versions',
     async (request, reply) => {
+      const scope = scopeFromRequest(request);
       const exists = await store.read((state) =>
-        state.workflows.some((workflow) => workflow.id === request.params.id),
+        state.workflows.some((workflow) => workflow.id === request.params.id && inScope(workflow, scope)),
       );
       if (!exists) {
         return reply.status(404).send({ message: 'Workflow not found.' });
       }
       const versions = await store.read((state) =>
         state.workflowVersions
-          .filter((workflow) => workflow.id === request.params.id)
+          .filter((workflow) => workflow.id === request.params.id && inScope(workflow, scope))
           .sort((left, right) => right.version - left.version),
       );
       return { items: versions };
@@ -158,6 +271,7 @@ export async function createApp(
   app.get<{ Params: { id: string; version: string } }>(
     '/api/workflows/:id/versions/:version',
     async (request, reply) => {
+      const scope = scopeFromRequest(request);
       const version = Number(request.params.version);
       if (!Number.isSafeInteger(version) || version < 1) {
         return reply.status(400).send({ message: 'Workflow version must be a positive integer.' });
@@ -165,7 +279,9 @@ export async function createApp(
       const workflow = await store.read((state) =>
         state.workflowVersions.find(
           (candidate) =>
-            candidate.id === request.params.id && candidate.version === version,
+            candidate.id === request.params.id &&
+            candidate.version === version &&
+            inScope(candidate, scope),
         ),
       );
       if (workflow === undefined) {
@@ -178,6 +294,7 @@ export async function createApp(
   app.put<{ Params: { id: string }; Body: WorkflowDefinition }>(
     '/api/workflows/:id',
     async (request, reply) => {
+      const scope = scopeFromRequest(request);
       const parsed = workflowDefinitionSchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.status(422).send({
@@ -185,7 +302,11 @@ export async function createApp(
           issues: parsed.error.issues,
         });
       }
-      const incoming = parsed.data;
+      const incoming: WorkflowDefinition = {
+        ...parsed.data,
+        tenantId: scope.tenantId,
+        projectId: scope.projectId,
+      };
       const validation = validateWorkflow(incoming);
       if (!validation.valid) {
         return reply.status(422).send({
@@ -196,7 +317,7 @@ export async function createApp(
 
       const saved = await store.mutate((state) => {
         const index = state.workflows.findIndex(
-          (candidate) => candidate.id === request.params.id,
+          (candidate) => candidate.id === request.params.id && candidate.projectId === scope.projectId,
         );
         if (index < 0) {
           throw new Error('Workflow not found.');
@@ -230,8 +351,9 @@ export async function createApp(
   app.post<{ Params: { id: string } }>(
     '/api/workflows/:id/validate',
     async (request, reply) => {
+      const scope = scopeFromRequest(request);
       const workflow = await store.read((state) =>
-        state.workflows.find((candidate) => candidate.id === request.params.id),
+        state.workflows.find((candidate) => candidate.id === request.params.id && inScope(candidate, scope)),
       );
       if (workflow === undefined) {
         return reply.status(404).send({ message: 'Workflow not found.' });
@@ -243,8 +365,9 @@ export async function createApp(
   app.post<{ Params: { id: string } }>(
     '/api/workflows/:id/runs',
     async (request, reply) => {
+      const scope = scopeFromRequest(request);
       const workflow = await store.read((state) =>
-        state.workflows.find((candidate) => candidate.id === request.params.id),
+        state.workflows.find((candidate) => candidate.id === request.params.id && inScope(candidate, scope)),
       );
       if (workflow === undefined) {
         return reply.status(404).send({ message: 'Workflow not found.' });
@@ -257,13 +380,15 @@ export async function createApp(
     },
   );
 
-  app.get('/api/runs', async () => ({
-    items: await store.read((state) => state.runs),
-  }));
+  app.get('/api/runs', async (request) => {
+    const scope = scopeFromRequest(request);
+    return { items: await store.read((state) => state.runs.filter((run) => inScope(run, scope))) };
+  });
 
   app.get<{ Params: { id: string } }>('/api/runs/:id', async (request, reply) => {
+    const scope = scopeFromRequest(request);
     const run = await store.read((state) =>
-      state.runs.find((candidate) => candidate.id === request.params.id),
+      state.runs.find((candidate) => candidate.id === request.params.id && inScope(candidate, scope)),
     );
     if (run === undefined) {
       return reply.status(404).send({ message: 'Run not found.' });
@@ -274,7 +399,10 @@ export async function createApp(
   app.post<{ Params: { id: string } }>(
     '/api/runs/:id/approve',
     async (request, reply) => {
+      const scope = scopeFromRequest(request);
       try {
+        const belongs = await store.read((state) => state.runs.some((run) => run.id === request.params.id && inScope(run, scope)));
+        if (!belongs) return reply.status(404).send({ message: 'Run not found.' });
         return await executor.approve(request.params.id);
       } catch (error) {
         return reply.status(409).send({ message: errorMessage(error) });
@@ -285,7 +413,10 @@ export async function createApp(
   app.post<{ Params: { id: string } }>(
     '/api/runs/:id/cancel',
     async (request, reply) => {
+      const scope = scopeFromRequest(request);
       try {
+        const belongs = await store.read((state) => state.runs.some((run) => run.id === request.params.id && inScope(run, scope)));
+        if (!belongs) return reply.status(404).send({ message: 'Run not found.' });
         return await executor.cancel(request.params.id);
       } catch (error) {
         return reply.status(409).send({ message: errorMessage(error) });
@@ -293,14 +424,16 @@ export async function createApp(
     },
   );
 
-  app.get<{ Querystring: { runId?: string } }>('/api/events', async (request) => ({
-    items: await events.list(request.query.runId),
-  }));
+  app.get<{ Querystring: { runId?: string } }>('/api/events', async (request) => {
+    const scope = scopeFromRequest(request);
+    return { items: (await events.list(request.query.runId)).filter((event) => inScope(event, scope)) };
+  });
 
   app.get<{
     Querystring: { runId?: string; signal?: 'log' | 'trace' | 'metric' };
   }>('/api/telemetry', async (request) => {
-    const items = await events.list(request.query.runId);
+    const scope = scopeFromRequest(request);
+    const items = (await events.list(request.query.runId)).filter((event) => inScope(event, scope));
     return {
       resource: {
         'service.name': 'agentic-workflow-factory',
@@ -313,7 +446,10 @@ export async function createApp(
     };
   });
 
-  app.get('/api/connections', async () => ({ items: await connections.list() }));
+  app.get('/api/connections', async (request) => {
+    const scope = scopeFromRequest(request);
+    return { items: await connections.list(scope.projectId, scope.tenantId) };
+  });
 
   app.post<{ Body: unknown }>('/api/connections', async (request, reply) => {
     const parsed = createConnectionSchema.safeParse(request.body);
@@ -324,7 +460,8 @@ export async function createApp(
       });
     }
     try {
-      return await connections.create(parsed.data);
+      const scope = scopeFromRequest(request);
+      return await connections.create({ ...parsed.data, ...scope });
     } catch (error) {
       return reply.status(409).send({ message: errorMessage(error) });
     }
@@ -333,8 +470,9 @@ export async function createApp(
   app.post<{ Params: { id: string } }>(
     '/api/connections/:id/check',
     async (request, reply) => {
+      const scope = scopeFromRequest(request);
       try {
-        return await connections.check(request.params.id);
+        return await connections.check(request.params.id, scope.projectId, scope.tenantId);
       } catch (error) {
         return reply.status(404).send({ message: errorMessage(error) });
       }
@@ -349,9 +487,10 @@ export async function createApp(
         issues: parsed.error.issues,
       });
     }
+    const scope = scopeFromRequest(request);
     const workflow = await store.read((state) =>
       state.workflows.find(
-        (candidate) => candidate.id === parsed.data.workflowId,
+        (candidate) => candidate.id === parsed.data.workflowId && inScope(candidate, scope),
       ),
     );
     if (workflow === undefined) {
@@ -360,12 +499,14 @@ export async function createApp(
     return proposals.create(workflow, parsed.data.goal);
   });
 
-  app.get('/api/agent/proposals', async () => ({
-    items: await store.read((state) => state.proposals),
-  }));
+  app.get('/api/agent/proposals', async (request) => {
+    const scope = scopeFromRequest(request);
+    return { items: await store.read((state) => state.proposals.filter((proposal) => inScope(proposal, scope))) };
+  });
 
-  app.get('/api/factory/metrics', async () => {
-    const runs = await store.read((state) => state.runs);
+  app.get('/api/factory/metrics', async (request) => {
+    const scope = scopeFromRequest(request);
+    const runs = await store.read((state) => state.runs.filter((run) => inScope(run, scope)));
     return calculateFactoryMetrics(runs);
   });
 

@@ -78,6 +78,8 @@ export const workflowEdgeSchema = z.object({
 });
 
 export const workflowDefinitionSchema = z.object({
+  tenantId: z.string().min(1).optional(),
+  projectId: z.string().min(1).optional(),
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string(),
@@ -104,4 +106,19 @@ export const createConnectionSchema = z.object({
 export const createProposalSchema = z.object({
   goal: z.string().trim().min(10).max(2_000),
   workflowId: z.string().min(1),
+});
+
+export const createTenantSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+});
+
+export const createProjectSchema = z.object({
+  tenantId: z.string().min(1).optional(),
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().max(500).default(''),
+});
+
+export const cloneWorkflowSchema = z.object({
+  sourceWorkflowId: z.string().min(1),
+  name: z.string().trim().min(1).max(100).optional(),
 });

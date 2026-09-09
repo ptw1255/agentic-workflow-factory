@@ -1,9 +1,22 @@
-import type { AgentDefinition, ConnectionRecord, PlatformState, WorkflowDefinition } from './types.js';
+import type { AgentDefinition, ConnectionRecord, PlatformState, ProjectRecord, TenantRecord, WorkflowDefinition } from './types.js';
 import { defaultWorkUnit } from './catalog.js';
 
 const createdAt = '2026-08-28T15:00:00.000Z';
+const tenantId = 'tenant-local';
+const projectId = 'project-local';
+
+const seedTenant: TenantRecord = { id: tenantId, name: 'Local tenant', createdAt };
+const seedProject: ProjectRecord = {
+  id: projectId,
+  tenantId,
+  name: 'Default loop',
+  description: 'Local development project',
+  createdAt,
+};
 
 export const seedWorkflow: WorkflowDefinition = {
+  tenantId,
+  projectId,
   id: 'workflow-agent-intake',
   name: 'Agent-led request intake',
   description:
@@ -101,6 +114,8 @@ for (const node of seedWorkflow.nodes) {
 
 const seedConnections: ConnectionRecord[] = [
   {
+    tenantId,
+    projectId,
     id: 'connection-product-api',
     name: 'Product API',
     connector: 'HTTP',
@@ -112,6 +127,8 @@ const seedConnections: ConnectionRecord[] = [
     secretConfigured: false,
   },
   {
+    tenantId,
+    projectId,
     id: 'connection-source-control',
     name: 'Source control',
     connector: 'GitHub',
@@ -126,6 +143,8 @@ const seedConnections: ConnectionRecord[] = [
 
 export function createSeedState(): PlatformState {
   return {
+    tenants: [structuredClone(seedTenant)],
+    projects: [structuredClone(seedProject)],
     workflows: [structuredClone(seedWorkflow)],
     workflowVersions: [structuredClone(seedWorkflow)],
     runs: [],

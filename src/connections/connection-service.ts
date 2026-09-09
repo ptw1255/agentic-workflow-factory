@@ -5,6 +5,8 @@ import type { PlatformStore } from '../storage/store.js';
 import type { SecretBroker } from './secret-broker.js';
 
 export interface CreateConnectionInput {
+  tenantId: string;
+  projectId: string;
   name: string;
   connector: string;
   environment: string;
@@ -18,13 +20,19 @@ export class ConnectionService {
     private readonly secrets?: SecretBroker,
   ) {}
 
-  public list(): Promise<ConnectionRecord[]> {
-    return this.store.read((state) => state.connections);
+  public list(projectId?: string, tenantId?: string): Promise<ConnectionRecord[]> {
+    return this.store.read((state) => state.connections.filter(
+      (connection) =>
+        (projectId === undefined || connection.projectId === projectId) &&
+        (tenantId === undefined || connection.tenantId === tenantId),
+    ));
   }
 
   public async create(input: CreateConnectionInput): Promise<ConnectionRecord> {
     const connectionId = randomUUID();
     const connection: ConnectionRecord = {
+      tenantId: input.tenantId,
+      projectId: input.projectId,
       id: connectionId,
       name: input.name,
       connector: input.connector,
@@ -60,12 +68,16 @@ export class ConnectionService {
     return connection;
   }
 
-  public async check(connectionId: string): Promise<ConnectionRecord> {
+  public async check(connectionId: string, projectId?: string, tenantId?: string): Promise<ConnectionRecord> {
     return this.store.mutate((state) => {
       const connection = state.connections.find(
         (candidate) => candidate.id === connectionId,
       );
-      if (connection === undefined) {
+      if (
+        connection === undefined ||
+        (projectId !== undefined && connection.projectId !== projectId) ||
+        (tenantId !== undefined && connection.tenantId !== tenantId)
+      ) {
         throw new Error('Connection not found.');
       }
       connection.status = 'healthy';

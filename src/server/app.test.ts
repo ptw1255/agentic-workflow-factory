@@ -51,6 +51,62 @@ describe('platform API', () => {
     );
   });
 
+  it('creates projects and scopes workflow reads by project header', async () => {
+    const createProject = await app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      headers: { 'x-tenant-id': 'tenant-local' },
+      payload: { name: 'Second loop', description: 'Independent workflow project' },
+    });
+    expect(createProject.statusCode).toBe(200);
+    const projectId = createProject.json<{ id: string }>().id;
+
+    const defaultWorkflows = await app.inject({ method: 'GET', url: '/api/workflows' });
+    const secondWorkflows = await app.inject({
+      method: 'GET',
+      url: '/api/workflows',
+      headers: { 'x-project-id': projectId },
+    });
+    expect(defaultWorkflows.json<{ items: unknown[] }>().items).toHaveLength(1);
+    expect(secondWorkflows.json<{ items: unknown[] }>().items).toHaveLength(0);
+
+    const clone = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/workflows`,
+      headers: { 'x-project-id': 'project-local', 'x-tenant-id': 'tenant-local' },
+      payload: { sourceWorkflowId: 'workflow-agent-intake', name: 'Second loop workflow' },
+    });
+    expect(clone.statusCode).toBe(200);
+    const scopedAfterClone = await app.inject({
+      method: 'GET',
+      url: '/api/workflows',
+      headers: { 'x-project-id': projectId, 'x-tenant-id': 'tenant-local' },
+    });
+    expect(scopedAfterClone.json<{ items: Array<{ projectId: string }> }>().items).toEqual([
+      expect.objectContaining({ projectId }),
+    ]);
+
+    const tenantResponse = await app.inject({
+      method: 'POST',
+      url: '/api/tenants',
+      payload: { name: 'Other tenant' },
+    });
+    const otherTenantId = tenantResponse.json<{ id: string }>().id;
+    const otherProjectResponse = await app.inject({
+      method: 'POST',
+      url: '/api/projects',
+      headers: { 'x-tenant-id': otherTenantId },
+      payload: { name: 'Other loop' },
+    });
+    expect(otherProjectResponse.statusCode).toBe(200);
+    const crossTenantRead = await app.inject({
+      method: 'GET',
+      url: '/api/workflows',
+      headers: { 'x-tenant-id': otherTenantId, 'x-project-id': projectId },
+    });
+    expect(crossTenantRead.json<{ items: unknown[] }>().items).toHaveLength(0);
+  });
+
   it('creates a managed connection without accepting credentials', async () => {
     const response = await app.inject({
       method: 'POST',

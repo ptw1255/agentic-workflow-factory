@@ -32,29 +32,41 @@ export class EventService {
       attributes?: Record<string, string | number | boolean>;
     } = {},
   ): Promise<RunEvent> {
-    const traceId = await this.store.read((state) =>
-      state.runs.find((run) => run.id === runId)?.traceId,
-    );
+    const runContext = await this.store.read((state) => {
+      const run = state.runs.find((candidate) => candidate.id === runId);
+      return {
+        traceId: run?.traceId,
+        tenantId: run?.tenantId,
+        projectId: run?.projectId,
+      };
+    });
     const event: RunEvent = {
+      ...(runContext.tenantId === undefined ? {} : { tenantId: runContext.tenantId }),
+      ...(runContext.projectId === undefined ? {} : { projectId: runContext.projectId }),
       id: randomUUID(),
       runId,
       type,
       timestamp: new Date().toISOString(),
       message,
       signal: options.signal ?? 'log',
-      traceId: traceId ?? runId.replaceAll('-', '').padEnd(32, '0').slice(0, 32),
+      traceId: runContext.traceId ?? runId.replaceAll('-', '').padEnd(32, '0').slice(0, 32),
       spanId: randomUUID().replaceAll('-', '').slice(0, 16),
       ...(options.nodeId === undefined ? {} : { nodeId: options.nodeId }),
       ...(options.data === undefined ? {} : { data: options.data }),
       ...(options.parentSpanId === undefined ? {} : { parentSpanId: options.parentSpanId }),
       ...(options.spanKind === undefined ? {} : { spanKind: options.spanKind }),
       ...(options.severityText === undefined ? {} : { severityText: options.severityText }),
-      attributes: { ...telemetryResource, ...(options.attributes ?? {}) },
+      attributes: {
+        ...telemetryResource,
+        ...(runContext.tenantId === undefined ? {} : { 'tenant.id': runContext.tenantId }),
+        ...(runContext.projectId === undefined ? {} : { 'project.id': runContext.projectId }),
+        ...(options.attributes ?? {}),
+      },
     };
 
     await this.store.appendEvent(event);
     if (this.exporter !== undefined) {
-      void this.exporter.export(event);
+      void this.exporter.export(event).catch(() => undefined);
     }
     return event;
   }

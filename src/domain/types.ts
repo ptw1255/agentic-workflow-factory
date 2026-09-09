@@ -9,6 +9,20 @@ export type RunStatus =
 export type ConnectionStatus = 'healthy' | 'degraded' | 'expired';
 export type IssueLevel = 'error' | 'warning';
 
+export interface TenantRecord {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface ProjectRecord {
+  id: string;
+  tenantId: string;
+  name: string;
+  description: string;
+  createdAt: string;
+}
+
 export interface Position {
   x: number;
   y: number;
@@ -77,6 +91,8 @@ export interface WorkflowEdge {
 }
 
 export interface WorkflowDefinition {
+  tenantId?: string;
+  projectId?: string;
   id: string;
   name: string;
   description: string;
@@ -105,6 +121,8 @@ export interface ValidationResult {
 }
 
 export interface RunRecord {
+  tenantId?: string;
+  projectId?: string;
   id: string;
   workflowId: string;
   workflowName: string;
@@ -125,6 +143,8 @@ export interface RunRecord {
 }
 
 export interface RunEvent {
+  tenantId?: string;
+  projectId?: string;
   id: string;
   runId: string;
   nodeId?: string;
@@ -142,6 +162,8 @@ export interface RunEvent {
 }
 
 export interface ConnectionRecord {
+  tenantId?: string;
+  projectId?: string;
   id: string;
   name: string;
   connector: string;
@@ -155,6 +177,8 @@ export interface ConnectionRecord {
 }
 
 export interface AgentProposal {
+  tenantId?: string;
+  projectId?: string;
   id: string;
   workflowId: string;
   goal: string;
@@ -190,6 +214,8 @@ export interface FactoryMetrics {
 }
 
 export interface PlatformState {
+  tenants: TenantRecord[];
+  projects: ProjectRecord[];
   workflows: WorkflowDefinition[];
   workflowVersions: WorkflowDefinition[];
   runs: RunRecord[];

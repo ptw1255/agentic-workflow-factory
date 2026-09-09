@@ -70,6 +70,16 @@ JSON state events are moved into that table automatically on first startup. Runt
 observability retention is 48 hours by default; a cleanup pass runs at startup and
 every 15 minutes and removes older records.
 
+### Tenants and projects
+
+The runtime is one shared installation that can host multiple isolated projects
+(the product abstraction for a loop). A tenant owns projects; workflows, agent boxes,
+connections, runs, proposals, and telemetry are scoped to a project. Existing local
+data is migrated into `tenant-local` / `project-local`. API clients can select a
+scope with `X-Tenant-ID` and `X-Project-ID` headers; omitted headers use the local
+defaults. Create a new project with `POST /api/projects`, then clone a workflow into
+it with `POST /api/projects/:projectId/workflows`.
+
 ### Phoenix traces (optional)
 
 Phoenix is an optional local trace UI and OTLP receiver. The factory exports trace
@@ -151,6 +161,11 @@ src/
   temporal/        # Durable Temporal workflow and activity worker
   web/             # React dashboard and workflow studio
 ```
+
+The deployment shape is intentionally shared: one control-plane container serves
+many projects, while PostgreSQL, Vault, Temporal workers, and optional Phoenix remain
+separate services. Resource-heavy or untrusted work can later move to isolated worker
+containers without creating a new platform container for every loop.
 
 The local executor makes development self-contained and explicitly reports itself as
 `local-durable-preview`. It checkpoints each unit to persistent state, supports

@@ -131,6 +131,8 @@ export class ProposalService {
     };
     const validation = validateWorkflow(proposed);
     const proposal: AgentProposal = {
+      ...(workflow.tenantId === undefined ? {} : { tenantId: workflow.tenantId }),
+      ...(workflow.projectId === undefined ? {} : { projectId: workflow.projectId }),
       id: randomUUID(),
       workflowId: workflow.id,
       goal,

@@ -1,0 +1,55 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import type { RunEvent } from '../domain/types.js';
+import { OtlpHttpExporter } from './otlp-exporter.js';
+
+const baseEvent: RunEvent = {
+  id: '11111111-1111-4111-8111-111111111111',
+  tenantId: 'tenant-local',
+  projectId: 'project-local',
+  runId: 'run-1',
+  type: 'agent.iteration',
+  timestamp: '2026-01-01T00:00:00.000Z',
+  message: 'iteration',
+  signal: 'trace',
+  traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  spanId: 'bbbbbbbbbbbbbbbb',
+  attributes: {
+    'openinference.span.kind': 'AGENT',
+    'tenant.id': 'tenant-local',
+    'project.id': 'project-local',
+  },
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('OtlpHttpExporter', () => {
+  it('exports a trace as an OTLP resource span', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+    const exporter = new OtlpHttpExporter('http://phoenix:6006', {}, { signals: ['trace'] });
+
+    await exporter.export(baseEvent);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://phoenix:6006/v1/traces');
+    const payload = JSON.parse(String(request.body)) as {
+      resourceSpans: Array<{ resource: { attributes: Array<{ key: string }> }; spans?: unknown[] }>;
+    };
+    expect(payload.resourceSpans).toHaveLength(1);
+    expect(payload.resourceSpans[0]?.resource.attributes.map((item) => item.key)).toContain('project.id');
+  });
+
+  it('does not send non-trace signals to a Phoenix trace-only exporter', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+    const exporter = new OtlpHttpExporter('http://phoenix:6006', {}, { signals: ['trace'] });
+
+    await exporter.export({ ...baseEvent, signal: 'metric' });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

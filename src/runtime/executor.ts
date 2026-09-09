@@ -78,6 +78,8 @@ export class LocalWorkflowExecutor {
       throw new Error('The declared workflow trigger node is missing.');
     }
     const run: RunRecord = {
+      ...(workflow.tenantId === undefined ? {} : { tenantId: workflow.tenantId }),
+      ...(workflow.projectId === undefined ? {} : { projectId: workflow.projectId }),
       id: randomUUID(),
       workflowId: workflow.id,
       workflowName: workflow.name,

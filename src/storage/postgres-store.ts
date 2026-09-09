@@ -67,12 +67,14 @@ export class PostgresStore implements PlatformStore {
     await this.ensureInitialized();
     await this.pool.query(
       `INSERT INTO observability_events
-        (id, run_id, timestamp, signal, event_type, trace_id, span_id,
+        (id, tenant_id, project_id, run_id, timestamp, signal, event_type, trace_id, span_id,
          parent_span_id, span_kind, severity_text, node_id, attributes, event)
-       VALUES ($1, $2, $3::timestamptz, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb)
+       VALUES ($1, $2, $3, $4, $5::timestamptz, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::jsonb)
        ON CONFLICT (id) DO NOTHING`,
       [
         event.id,
+        event.tenantId ?? null,
+        event.projectId ?? null,
         event.runId,
         event.timestamp,
         event.signal,
@@ -147,6 +149,8 @@ export class PostgresStore implements PlatformStore {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS observability_events (
         id UUID PRIMARY KEY,
+        tenant_id TEXT,
+        project_id TEXT,
         run_id TEXT NOT NULL,
         timestamp TIMESTAMPTZ NOT NULL,
         signal TEXT NOT NULL CHECK (signal IN ('log', 'trace', 'metric')),
@@ -161,6 +165,11 @@ export class PostgresStore implements PlatformStore {
         event JSONB NOT NULL
       )
     `);
+    await this.pool.query('ALTER TABLE observability_events ADD COLUMN IF NOT EXISTS tenant_id TEXT');
+    await this.pool.query('ALTER TABLE observability_events ADD COLUMN IF NOT EXISTS project_id TEXT');
+    await this.pool.query(
+      'CREATE INDEX IF NOT EXISTS observability_events_project_time_idx ON observability_events (project_id, timestamp)',
+    );
     await this.pool.query(
       'CREATE INDEX IF NOT EXISTS observability_events_run_time_idx ON observability_events (run_id, timestamp)',
     );
@@ -176,6 +185,7 @@ export class PostgresStore implements PlatformStore {
     );
     const state = result.rows[0]?.state;
     if (state === undefined || state.events.length === 0) return;
+    normalizePlatformState(state);
     for (const event of state.events) {
       const migratedEvent: RunEvent = {
         ...event,
@@ -185,11 +195,13 @@ export class PostgresStore implements PlatformStore {
       };
       await this.pool.query(
         `INSERT INTO observability_events
-          (id, run_id, timestamp, signal, event_type, trace_id, span_id, node_id, attributes, event)
-         VALUES ($1, $2, $3::timestamptz, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
+          (id, tenant_id, project_id, run_id, timestamp, signal, event_type, trace_id, span_id, node_id, attributes, event)
+         VALUES ($1, $2, $3, $4, $5::timestamptz, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb)
          ON CONFLICT (id) DO NOTHING`,
         [
           event.id,
+          migratedEvent.tenantId ?? null,
+          migratedEvent.projectId ?? null,
           event.runId,
           event.timestamp,
           migratedEvent.signal,
